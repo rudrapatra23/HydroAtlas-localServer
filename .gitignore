@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+*.d.ts
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.log
+*.tmp
