@@ -6,7 +6,6 @@ import HydraMap from "./map/HydraMap";
 import BottomPanel from "./bottom-panel/BottomPanel";
 
 export default function AppShell() {
-  const leftSidebarOpen = useAppStore((s) => s.leftSidebarOpen);
   const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen);
 
   return (
