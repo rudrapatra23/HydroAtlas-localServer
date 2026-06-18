@@ -21,25 +21,63 @@ class DatasetService:
     async def download_and_register(
         self,
         request: DownloadRequest,
-    ) -> ClimateAsset:
-        """Download climate data via provider and register it."""
+    ) -> DownloadResponse:
+        """Download climate data via provider and register it (idempotent)."""
         if not self.provider:
             raise ValueError("No provider configured for DatasetService")
 
-        # Download data from provider
+        # Single repository lookup: check if asset exists already
+        existing_asset = await self.repository.get_by_period(
+            year=request.year,
+            month=request.month,
+            provider=request.provider,
+            variable=request.variable,
+        )
+        if existing_asset:
+            # Return existing asset as DownloadResponse
+            return DownloadResponse(
+                success=True,
+                file_path=None,  # No local file for existing assets
+                checksum=existing_asset.checksum,
+                file_size=existing_asset.file_size,
+                error_message=None,
+            )
+
+        # Asset doesn't exist: download, upload, save
         download_result = await self.provider.download(request)
         if not download_result.success or not download_result.file_path:
-            raise ValueError(f"Download failed: {download_result.error_message}")
+            return download_result
 
-        # Register asset
-        return await self.register_asset(
+        storage_key = f"{request.provider}/{request.variable}/{request.year}/{request.month:02d}.nc"
+        self.storage.upload(storage_key, download_result.file_path)
+
+        asset = ClimateAsset(
+            id=None,
             provider=request.provider,
             variable=request.variable,
             year=request.year,
             month=request.month,
-            file_path=download_result.file_path,
-            file_size=download_result.file_size or 0,
+            storage_key=storage_key,
             checksum=download_result.checksum or "",
+            file_size=download_result.file_size or 0,
+            status=ClimateAssetStatus.COMPLETED,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+        try:
+            saved_asset = await self.repository.save(asset)
+        except Exception:
+            # Rollback: delete uploaded object if repository save fails
+            self.storage.delete(storage_key)
+            raise
+
+        return DownloadResponse(
+            success=True,
+            file_path=download_result.file_path,
+            checksum=saved_asset.checksum,
+            file_size=saved_asset.file_size,
+            error_message=None,
         )
 
     async def register_asset(
