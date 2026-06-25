@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from domain.entities.climate_asset import ClimateAssetStatus
 
@@ -11,6 +11,11 @@ from domain.entities.climate_asset import ClimateAssetStatus
 @dataclass
 class DownloadResponse:
     success: bool
+    storage_key: Optional[str] = None
+    provider: Optional[str] = None
+    variable: Optional[str] = None
+    year: Optional[int] = None
+    month: Optional[int] = None
     file_path: Optional[Path] = None
     checksum: Optional[str] = None
     file_size: Optional[int] = None
@@ -46,3 +51,29 @@ class ClimateAssetResponse:
             created_at=asset.created_at,
             updated_at=asset.updated_at,
         )
+
+
+@dataclass
+class StatisticsResponse:
+    district_id: str
+    variable: str
+    mean: float
+    min: float
+    max: float
+
+
+@dataclass
+class StateDistrictStatisticsItem:
+    district_id: str
+    mean: float
+    min: float
+    max: float
+
+
+@dataclass
+class StateDistrictStatisticsResponse:
+    state_id: str
+    year: int
+    month: int
+    variable: str
+    districts: Sequence[StateDistrictStatisticsItem]

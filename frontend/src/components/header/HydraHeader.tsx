@@ -2,8 +2,10 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useState } from "react";
 
 function HydraHeader() {
-  const timelineDate = useAppStore((state) => state.timelineDate);
-  const setTimelineDate = useAppStore((state) => state.setTimelineDate);
+  const startDate = useAppStore((state) => state.startDate);
+  const endDate = useAppStore((state) => state.endDate);
+  const setStartDate = useAppStore((state) => state.setStartDate);
+  const setEndDate = useAppStore((state) => state.setEndDate);
   const [settingsHovered, setSettingsHovered] = useState(false);
 
   return (
@@ -30,27 +32,30 @@ function HydraHeader() {
           </span>
         </div>
 
-        <div className="relative">
-          <input
-            type="search"
-            aria-label="Coordinate search"
-            placeholder="78.96, 22.59"
-            className="w-44 rounded-full border border-slate-900/6 bg-slate-50/70 pl-9 pr-4 py-2.5 text-sm text-slate-700 outline-none transition-all duration-200 ease-out placeholder:text-slate-400 focus:border-blue-500/30 focus:bg-white focus:shadow-[0_0_0_3px_rgba(37,99,235,0.08)]"
-          />
-          <span className="material-symbols-rounded pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: 18 }}>
-            pin_drop
+        <label className="flex items-center gap-2 rounded-full border border-slate-900/6 bg-slate-50/70 px-4 py-2.5 text-sm text-slate-600 transition-all duration-200 ease-out hover:bg-white">
+          <span className="material-symbols-rounded text-slate-400" style={{ fontSize: 18 }}>
+            calendar_today
           </span>
-        </div>
+          <span className="text-xs text-slate-500">Start</span>
+          <input
+            type="date"
+            aria-label="Start date"
+            value={startDate}
+            onChange={(event) => setStartDate(event.target.value)}
+            className="w-32 bg-transparent text-slate-700 outline-none"
+          />
+        </label>
 
         <label className="flex items-center gap-2 rounded-full border border-slate-900/6 bg-slate-50/70 px-4 py-2.5 text-sm text-slate-600 transition-all duration-200 ease-out hover:bg-white">
           <span className="material-symbols-rounded text-slate-400" style={{ fontSize: 18 }}>
             calendar_today
           </span>
+          <span className="text-xs text-slate-500">End</span>
           <input
             type="date"
-            aria-label="Date selector"
-            value={timelineDate}
-            onChange={(event) => setTimelineDate(event.target.value)}
+            aria-label="End date"
+            value={endDate}
+            onChange={(event) => setEndDate(event.target.value)}
             className="w-32 bg-transparent text-slate-700 outline-none"
           />
         </label>

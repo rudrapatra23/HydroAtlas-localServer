@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Sequence
+from typing import Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,13 +77,14 @@ class PostgresDatasetRepository(DatasetRepository):
             return None
         return _to_domain(model)
 
-    async def get_by_period(self, year: int, month: int, provider: str, variable: str) -> ClimateAsset | None:
+    async def get_by_period(self, year: int, month: int, provider: str, variable: Optional[str] = None) -> ClimateAsset | None:
         stmt = select(ClimateAssetModel).where(
             ClimateAssetModel.provider == provider,
-            ClimateAssetModel.variable == variable,
             ClimateAssetModel.year == year,
             ClimateAssetModel.month == month,
         )
+        if variable is not None:
+            stmt = stmt.where(ClimateAssetModel.variable == variable)
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
         if model is None:

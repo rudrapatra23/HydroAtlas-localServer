@@ -1,0 +1,87 @@
+# ─── HydroAtlas — Docker Compose ─────────────────────────────────────
+# Run the full stack:  docker compose up --build
+# ──────────────────────────────────────────────────────────────────────
+
+services:
+  # ── PostgreSQL ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hydroatlas
+      POSTGRES_PASSWORD: hydroatlas
+      POSTGRES_DB: hydroatlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydroatlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO (S3-compatible object storage) ─────────────────────────────
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ──────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      APP_NAME: HydroAtlas
+      VERSION: 0.1.0
+      ENVIRONMENT: production
+      LOG_LEVEL: INFO
+      # ── Database (points to the postgres service, not localhost) ─────
+      DATABASE_URL: "postgresql+asyncpg://hydroatlas:hydroatlas@postgres:5432/hydroatlas"
+      # ── S3 / MinIO (points to the minio service, not localhost) ─────
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_BUCKET_NAME: hydroatlas
+      S3_ENDPOINT_URL: "http://minio:9000"
+
+  # ── React / Vite Frontend ───────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # At build-time, Vite bakes this into the JS bundle.
+        # From the browser's perspective, the backend is on the host at :8000.
+        VITE_API_BASE_URL: "http://localhost:8000"
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  minio_data:

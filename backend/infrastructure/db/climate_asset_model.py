@@ -20,7 +20,11 @@ class ClimateAssetModel(Base):
     storage_key: Mapped[str] = mapped_column(String, nullable=False)
     checksum: Mapped[str] = mapped_column(String, nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[ClimateAssetStatus] = mapped_column(Enum(ClimateAssetStatus), nullable=False, index=True)
+    status: Mapped[ClimateAssetStatus] = mapped_column(
+        Enum(ClimateAssetStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 

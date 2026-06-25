@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.env
+.venv/
+*.egg-info/
+dist/
+build/
+clipped_output/
+temp_raster.nc
+data/
+*.log
+*.tmp
+.git/
+.gitignore

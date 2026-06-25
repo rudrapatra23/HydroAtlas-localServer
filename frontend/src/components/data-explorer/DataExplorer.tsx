@@ -45,11 +45,8 @@ function IconContainer({ children, color }: IconContainerProps) {
 function DataExplorer() {
   const sidebarOpen = useAppStore((state) => state.leftSidebarOpen);
   const setSidebarOpen = useAppStore((state) => state.setLeftSidebarOpen);
-  const datasets = useAppStore((state) => state.datasets);
   const layers = useAppStore((state) => state.layers);
-  const toggleDataset = useAppStore((state) => state.toggleDataset);
   const toggleLayer = useAppStore((state) => state.toggleLayer);
-  const setLayerOpacity = useAppStore((state) => state.setLayerOpacity);
   const states = useAppStore((state) => state.states);
   const districts = useAppStore((state) => state.districts);
   const selectedStateId = useAppStore((state) => state.selectedStateId);
@@ -186,29 +183,18 @@ function DataExplorer() {
               {/* Dataset Management Section */}
               <div className="space-y-3">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                  Datasets
+                  Dataset
                 </p>
                 <div className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5">
-                  <div
-                    className="flex w-full items-center justify-between gap-3 cursor-pointer transition-transform duration-180 ease-out hover:translate-x-[2px]"
-                    onClick={() => toggleDataset("era5-land")}
-                  >
-                    <div className="flex items-center gap-3">
-                      <IconContainer>
-                        <span className="material-symbols-rounded text-slate-700" style={{ fontSize: 24 }}>
-                          public
-                        </span>
-                      </IconContainer>
-                      <span className="text-sm font-semibold text-slate-700">
-                        ERA5-Land
+                  <div className="flex w-full items-center gap-3">
+                    <IconContainer>
+                      <span className="material-symbols-rounded text-slate-700" style={{ fontSize: 24 }}>
+                        public
                       </span>
-                    </div>
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <Toggle
-                        checked={datasets["era5-land"]}
-                        onChange={() => toggleDataset("era5-land")}
-                      />
-                    </div>
+                    </IconContainer>
+                    <span className="text-sm font-semibold text-slate-700">
+                      ERA5-Land
+                    </span>
                   </div>
                 </div>
               </div>
@@ -281,39 +267,6 @@ function DataExplorer() {
                             />
                           </div>
                         </div>
-
-                        {/* Expandable Opacity Slider */}
-                        <AnimatePresence initial={false}>
-                          {layer.enabled && (
-                            <motion.div
-                              initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                              animate={{ opacity: 1, height: "auto", marginTop: 12 }}
-                              exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                              className="overflow-hidden"
-                            >
-                              <div className="space-y-2 pl-12">
-                                <div className="flex justify-between text-[11px] text-slate-500">
-                                  <span>Opacity</span>
-                                  <span>{Math.round(layer.opacity * 100)}%</span>
-                                </div>
-                                <input
-                                  type="range"
-                                  min="0"
-                                  max="1"
-                                  step="0.01"
-                                  value={layer.opacity}
-                                  onChange={(e) =>
-                                    setLayerOpacity(layerKey, parseFloat(e.target.value))
-                                  }
-                                  className="w-full cursor-pointer accent-blue-600 h-1.5 bg-slate-200 rounded-full appearance-none"
-                                  style={{
-                                    accentColor: data.color,
-                                  }}
-                                />
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
                       </div>
                     );
                   })}

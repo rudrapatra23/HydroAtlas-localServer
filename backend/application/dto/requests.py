@@ -16,3 +16,10 @@ class DownloadRequest:
     year: int
     month: int
     region: Optional[tuple[float, float, float, float]] = None
+
+
+@dataclass
+class StatisticsRequest:
+    year: int
+    month: int
+    variable: str = "precipitation"

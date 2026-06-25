@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import Optional, Sequence
 
 from domain.entities.climate_asset import ClimateAsset
 
@@ -16,7 +16,7 @@ class DatasetRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_by_period(self, year: int, month: int, provider: str, variable: str) -> ClimateAsset | None:
+    def get_by_period(self, year: int, month: int, provider: str, variable: Optional[str] = None) -> ClimateAsset | None:
         raise NotImplementedError
 
     @abstractmethod

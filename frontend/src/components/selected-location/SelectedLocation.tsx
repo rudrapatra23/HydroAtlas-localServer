@@ -1,29 +1,21 @@
-import { useAppStore } from "../../stores/useAppStore";
+import { useEffect, useState } from "react";
+import { useAppStore, Variable } from "../../stores/useAppStore";
 import { motion } from "framer-motion";
+import { getDistrictStatistics } from "../../api/boundaries";
 
-interface MockData {
-  rainfall: number;
-  soilMoisture: number;
-  runoff: number;
-  dataSource: string;
-  lastUpdated: string;
+interface KpiConfig {
+  icon: string;
+  label: string;
+  variable: Variable;
+  unit: string;
+  color: string;
 }
 
-function getMockData(lat: number, lng: number, date: string): MockData {
-  const seed = lat * 10000 + lng * 100 + date.split("-").reduce((a, b) => a + parseInt(b), 0);
-  const random = (min: number, max: number) => {
-    const x = Math.sin(seed) * 10000;
-    return (x - Math.floor(x)) * (max - min) + min;
-  };
-
-  return {
-    rainfall: parseFloat(random(10, 200).toFixed(1)),
-    soilMoisture: parseFloat(random(20, 80).toFixed(1)),
-    runoff: parseFloat(random(5, 100).toFixed(1)),
-    dataSource: "ERA5-Land",
-    lastUpdated: new Date().toISOString().split("T")[0],
-  };
-}
+const KPI_CONFIGS: KpiConfig[] = [
+  { icon: "rainy", label: "Precipitation", variable: "precipitation", unit: "m", color: "#2563EB" },
+  { icon: "water_drop", label: "Soil Moisture", variable: "soil_moisture", unit: "m³/m³", color: "#16A34A" },
+  { icon: "waves", label: "Surface Runoff", variable: "surface_runoff", unit: "m", color: "#EA580C" },
+];
 
 function IconContainer({
   children,
@@ -81,7 +73,7 @@ function KpiCard({
             className="text-2xl font-semibold tracking-tight"
             style={{ color }}
           >
-            {value}
+            {value.toFixed(6)}
           </span>
           <span className="text-sm text-slate-500">{unit}</span>
         </div>
@@ -91,10 +83,54 @@ function KpiCard({
 }
 
 function SelectedLocation() {
-  const selectedPoint = useAppStore((state) => state.selectedPoint);
-  const timelineDate = useAppStore((state) => state.timelineDate);
+  const selectedStateId = useAppStore((state) => state.selectedStateId);
+  const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
+  const states = useAppStore((state) => state.states);
+  const districts = useAppStore((state) => state.districts);
   const rightSidebarOpen = useAppStore((state) => state.rightSidebarOpen);
   const setRightSidebarOpen = useAppStore((state) => state.setRightSidebarOpen);
+  const [stats, setStats] = useState<Record<Variable, { mean: number; min: number; max: number }> | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const selectedState = states.find((s) => s.id === selectedStateId);
+  const selectedDistrict = districts.find((d) => d.id === selectedDistrictId);
+
+  useEffect(() => {
+    if (!selectedDistrictId) {
+      setStats(null);
+      return;
+    }
+
+    const districtId = selectedDistrictId;
+    let cancelled = false;
+    setLoading(true);
+
+    async function fetchAllStats() {
+      try {
+        const [precipStats, soilStats, runoffStats] = await Promise.all([
+          getDistrictStatistics(districtId, 2024, 1, "precipitation"),
+          getDistrictStatistics(districtId, 2024, 1, "soil_moisture"),
+          getDistrictStatistics(districtId, 2024, 1, "surface_runoff"),
+        ]);
+        if (cancelled) return;
+        setStats({
+          precipitation: { mean: precipStats.mean, min: precipStats.min, max: precipStats.max },
+          soil_moisture: { mean: soilStats.mean, min: soilStats.min, max: soilStats.max },
+          surface_runoff: { mean: runoffStats.mean, min: runoffStats.min, max: runoffStats.max },
+        });
+      } catch (error) {
+        console.error("Failed to fetch statistics:", error);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    fetchAllStats();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDistrictId]);
 
   if (!rightSidebarOpen) {
     return (
@@ -114,11 +150,9 @@ function SelectedLocation() {
     );
   }
 
-  if (!selectedPoint) {
+  if (!selectedStateId || !selectedDistrictId) {
     return null;
   }
-
-  const mockData = getMockData(selectedPoint.lat, selectedPoint.lng, timelineDate);
 
   return (
     <motion.div
@@ -129,7 +163,7 @@ function SelectedLocation() {
     >
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm font-semibold text-slate-900 tracking-tight">
-          Selected Location
+          Selected Region
         </p>
         <motion.button
           whileHover={{ scale: 1.05, backgroundColor: "rgba(15,23,42,0.04)" }}
@@ -147,53 +181,52 @@ function SelectedLocation() {
       <div className="flex gap-2 rounded-[14px] bg-slate-50/80 px-3 py-2.5 mb-4">
         <div className="flex-1">
           <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.16em]">
-            Latitude
+            State
           </span>
           <p className="text-sm font-medium text-slate-800">
-            {selectedPoint.lat.toFixed(4)}°
+            {selectedState?.name || "-"}
           </p>
         </div>
         <div className="w-px bg-slate-200" />
         <div className="flex-1">
           <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.16em]">
-            Longitude
+            District
           </span>
           <p className="text-sm font-medium text-slate-800">
-            {selectedPoint.lng.toFixed(4)}°
+            {selectedDistrict?.name || "-"}
           </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 mb-4">
-        <KpiCard
-          icon="rainy"
-          label="Rainfall"
-          value={mockData.rainfall}
-          unit="mm"
-          color="#2563EB"
-        />
-        <KpiCard
-          icon="water_drop"
-          label="Soil Moisture"
-          value={mockData.soilMoisture}
-          unit="%"
-          color="#16A34A"
-        />
-        <KpiCard
-          icon="waves"
-          label="Runoff"
-          value={mockData.runoff}
-          unit="mm"
-          color="#EA580C"
-        />
-      </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-8">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-blue-600" />
+        </div>
+      ) : stats ? (
+        <div className="grid grid-cols-1 gap-3 mb-4">
+          {KPI_CONFIGS.map((kpi) => (
+            <KpiCard
+              key={kpi.variable}
+              icon={kpi.icon}
+              label={kpi.label}
+              value={stats[kpi.variable].mean}
+              unit={kpi.unit}
+              color={kpi.color}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="flex items-center justify-center py-8 text-sm text-slate-500">
+          No data available
+        </div>
+      )}
 
       <div className="flex justify-between items-center text-[11px] text-slate-500">
         <div className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-          <span>Data source: {mockData.dataSource}</span>
+          <span>Data source: ERA5-Land</span>
         </div>
-        <span>Updated {mockData.lastUpdated}</span>
+        <span>Jan 2024</span>
       </div>
     </motion.div>
   );

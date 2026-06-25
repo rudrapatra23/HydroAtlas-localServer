@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef } from "react";
 import maplibregl, {
   Map,
-  Marker,
   StyleSpecification,
-  LngLatLike,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useAppStore } from "../../stores/useAppStore";
-import { getDistrictsGeojson } from "../../api/boundaries";
+import {
+  getDistrictsGeojson,
+} from "../../api/boundaries";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const DEFAULT_STATS_YEAR = 2024;
+const DEFAULT_STATS_MONTH = 1;
 
 
 
@@ -38,59 +42,136 @@ const lightBasemapStyle: StyleSpecification = {
   ],
 };
 
-function createMarkerElement() {
-  const markerElement = document.createElement("div");
-
-  markerElement.style.width = "18px";
-  markerElement.style.height = "18px";
-  markerElement.style.borderRadius = "9999px";
-  markerElement.style.background =
-    "radial-gradient(circle at 30% 30%, #ecfeff 0%, #67e8f9 35%, #06b6d4 100%)";
-  markerElement.style.border = "2px solid rgba(255, 255, 255, 0.95)";
-  markerElement.style.boxShadow =
-    "0 0 0 6px rgba(34, 211, 238, 0.18), 0 12px 28px rgba(8, 145, 178, 0.35)";
-  
-  // Add drop animation
-  markerElement.style.animation = "markerDrop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)";
-
-  // Add the animation style to the document if not already there
-  if (!document.getElementById("marker-drop-animation")) {
-    const style = document.createElement("style");
-    style.id = "marker-drop-animation";
-    style.textContent = `
-      @keyframes markerDrop {
-        0% {
-          transform: translateY(-40px) scale(0.6);
-          opacity: 0;
-        }
-        100% {
-          transform: translateY(0) scale(1);
-          opacity: 1;
-        }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
-  return markerElement;
-}
-
 function HydraMap() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
-  const markerRef = useRef<Marker | null>(null);
-  const selectedPoint = useAppStore((state) => state.selectedPoint);
-  const setSelectedPoint = useAppStore((state) => state.setSelectedPoint);
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
+  const selectedVariable = useAppStore((state) => state.selectedVariable);
   const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
   const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
   const districtGeojsonRef = useRef<any | null>(null);
+  const geojsonLoadedForStateRef = useRef<string | null>(null);
 
   const emptyFeatureCollection = useMemo(
     () => ({ type: "FeatureCollection", features: [] as any[] }),
     []
   );
+
+  async function fetchStateDistrictStatistics(stateId: string, variable: string) {
+    const response = await fetch(
+      `${API_BASE_URL}/states/${encodeURIComponent(stateId)}/districts/statistics`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          year: DEFAULT_STATS_YEAR,
+          month: DEFAULT_STATS_MONTH,
+          variable,
+        }),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status} ${response.statusText}`);
+    }
+    const json = (await response.json()) as {
+      state_id: string;
+      year: number;
+      month: number;
+      variable: string;
+      districts: Array<{ district_id: string; mean: number; min: number; max: number }>;
+    };
+    console.log("[choropleth] stats response", json);
+    return json;
+  }
+
+  function applyChoropleth(
+    source: any,
+    baseGeojson: any,
+    stats: {
+      districts: Array<{ district_id: string; mean: number }>;
+    }
+  ) {
+    const byDistrictId = new Map<string, number>();
+    for (const item of stats.districts) {
+      if (typeof item.mean === "number" && !Number.isNaN(item.mean)) {
+        byDistrictId.set(item.district_id, item.mean);
+      }
+    }
+
+    const features = (baseGeojson.features ?? []) as any[];
+    let featureWithIdCount = 0;
+    let matchedCount = 0;
+    const missingIds: string[] = [];
+    for (const f of features) {
+      const districtId = f?.properties?.district_id as string | undefined;
+      if (!districtId) continue;
+      featureWithIdCount += 1;
+      if (byDistrictId.has(districtId)) {
+        matchedCount += 1;
+      } else if (missingIds.length < 20) {
+        missingIds.push(districtId);
+      }
+    }
+    console.log("[choropleth] geojson features", {
+      totalFeatures: features.length,
+      featuresWithDistrictId: featureWithIdCount,
+      matched: matchedCount,
+      allMatched: featureWithIdCount > 0 && matchedCount === featureWithIdCount,
+      sampleMissingDistrictIds: missingIds,
+    });
+
+    const means = Array.from(byDistrictId.values());
+    if (means.length === 0) {
+      source.setData(baseGeojson);
+      return;
+    }
+
+    let min = means[0];
+    let max = means[0];
+    for (const v of means) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const denom = max - min;
+    console.log("[choropleth] frontend mean range", { min, max, denom });
+
+    const firstFiveNormalized: Array<{ district_id: string; mean: number; norm: number }> = [];
+
+    const joined = {
+      ...baseGeojson,
+      features: (baseGeojson.features ?? []).map((f: any) => {
+        const districtId = f?.properties?.district_id as string | undefined;
+        if (!districtId) return f;
+        const mean = byDistrictId.get(districtId);
+        if (mean === undefined) {
+          return {
+            ...f,
+            properties: {
+              ...f.properties,
+              mean: null,
+              norm: null,
+            },
+          };
+        }
+        const norm = denom === 0 ? 0.5 : (mean - min) / denom;
+        if (firstFiveNormalized.length < 5) {
+          firstFiveNormalized.push({ district_id: districtId, mean, norm });
+        }
+        return {
+          ...f,
+          properties: {
+            ...f.properties,
+            mean,
+            norm,
+          },
+        };
+      }),
+    };
+
+    console.log("[choropleth] first five normalized", firstFiveNormalized);
+    source.setData(joined);
+  }
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -138,8 +219,32 @@ function HydraMap() {
           type: "fill",
           source: "districts",
           paint: {
-            "fill-color": "#2563EB",
-            "fill-opacity": 0.08,
+            "fill-color": [
+              "case",
+              ["has", "norm"],
+              [
+                "interpolate",
+                ["linear"],
+                ["get", "norm"],
+                0,
+                "#2563EB",
+                0.25,
+                "#16A34A",
+                0.5,
+                "#FACC15",
+                0.75,
+                "#F97316",
+                1,
+                "#DC2626",
+              ],
+              "#2563EB",
+            ],
+            "fill-opacity": [
+              "case",
+              ["has", "norm"],
+              0.55,
+              0.08,
+            ],
           },
         });
       }
@@ -193,46 +298,23 @@ function HydraMap() {
       const districtId = feature?.properties?.district_id as string | undefined;
       const stateId = feature?.properties?.state_id as string | undefined;
       if (districtId && stateId) {
-        markerRef.current?.remove();
-        setSelectedPoint(null);
         if (selectedStateId !== stateId) {
           setSelectedStateId(stateId);
           queueMicrotask(() => setSelectedDistrictId(districtId));
         } else {
           setSelectedDistrictId(districtId);
         }
-        return;
       }
-
-      markerRef.current?.remove();
-
-      markerRef.current = new maplibregl.Marker({
-        element: createMarkerElement(),
-        anchor: "center",
-      })
-        .setLngLat(event.lngLat)
-        .addTo(map);
-
-      setSelectedPoint({ lat: event.lngLat.lat, lng: event.lngLat.lng });
-
-      map.flyTo({
-        center: event.lngLat,
-        duration: 900,
-        essential: true,
-      });
     });
 
     return () => {
-      markerRef.current?.remove();
       map.remove();
-      markerRef.current = null;
       mapRef.current = null;
     };
   }, [
     emptyFeatureCollection,
     selectedStateId,
     setSelectedDistrictId,
-    setSelectedPoint,
     setSelectedStateId,
   ]);
 
@@ -248,6 +330,7 @@ function HydraMap() {
 
       if (!selectedStateId) {
         districtGeojsonRef.current = emptyFeatureCollection;
+        geojsonLoadedForStateRef.current = null;
         source.setData(emptyFeatureCollection as any);
         return;
       }
@@ -256,10 +339,21 @@ function HydraMap() {
         const geojson = await getDistrictsGeojson(selectedStateId);
         if (cancelled) return;
         districtGeojsonRef.current = geojson as any;
+        geojsonLoadedForStateRef.current = selectedStateId;
         source.setData(geojson as any);
+
+        try {
+          const stats = await fetchStateDistrictStatistics(selectedStateId, selectedVariable);
+          if (cancelled) return;
+          applyChoropleth(source, geojson as any, stats);
+        } catch (error) {
+          if (cancelled) return;
+          source.setData(geojson as any);
+        }
       } catch (error) {
         if (cancelled) return;
         districtGeojsonRef.current = emptyFeatureCollection;
+        geojsonLoadedForStateRef.current = null;
         source.setData(emptyFeatureCollection as any);
       }
     }
@@ -273,7 +367,35 @@ function HydraMap() {
     return () => {
       cancelled = true;
     };
-  }, [emptyFeatureCollection, selectedStateId]);
+  }, [emptyFeatureCollection, selectedStateId, selectedVariable]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const source = map?.getSource("districts") as any;
+    const baseGeojson = districtGeojsonRef.current;
+    if (!map || !source || !baseGeojson) return;
+    if (!selectedStateId) return;
+    if (geojsonLoadedForStateRef.current !== selectedStateId) return;
+
+    let cancelled = false;
+
+    async function refetchAndApply() {
+      try {
+        const stats = await fetchStateDistrictStatistics(selectedStateId, selectedVariable);
+        if (cancelled) return;
+        applyChoropleth(source, baseGeojson, stats);
+      } catch (error) {
+        if (cancelled) return;
+        source.setData(baseGeojson);
+      }
+    }
+
+    refetchAndApply();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStateId, selectedVariable]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -338,38 +460,27 @@ function HydraMap() {
     });
   }, [selectedDistrictId]);
 
-  // Update marker if selectedPoint changes externally
-  useEffect(() => {
-    if (!mapRef.current) return;
-
-    if (selectedPoint) {
-      const lngLat: LngLatLike = [selectedPoint.lng, selectedPoint.lat];
-      markerRef.current?.remove();
-      markerRef.current = new maplibregl.Marker({
-        element: createMarkerElement(),
-        anchor: "center",
-      })
-        .setLngLat(lngLat)
-        .addTo(mapRef.current);
-    } else {
-      markerRef.current?.remove();
-      markerRef.current = null;
-    }
-  }, [selectedPoint]);
-
-  // return (
-  //   <div className="absolute inset-0 z-0 overflow-hidden">
-  //     <div ref={mapContainerRef} className="h-full w-full" />
-  //   </div>
-  // );
   return (
-  <div className="absolute inset-0 z-0 overflow-hidden">
-    <div
-      ref={mapContainerRef}
-      className="h-full w-full"
-    />
-  </div>
-);
+    <div className="absolute inset-0 z-0 overflow-hidden">
+      <div ref={mapContainerRef} className="h-full w-full" />
+      <div className="absolute bottom-4 right-4 z-10 pointer-events-none">
+        <div className="rounded-[14px] border border-slate-900/6 bg-white/92 px-3 py-2.5 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px]">
+          <div className="text-[11px] font-semibold text-slate-600 mb-1">
+            Low → High
+          </div>
+          <div className="flex items-center gap-2">
+            <div
+              className="h-2.5 w-28 rounded"
+              style={{
+                background:
+                  "linear-gradient(90deg, #2563EB 0%, #16A34A 25%, #FACC15 50%, #F97316 75%, #DC2626 100%)",
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default HydraMap;

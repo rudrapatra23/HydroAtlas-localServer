@@ -318,7 +318,8 @@ function ExportTab() {
 }
 
 function BottomPanel() {
-  const selectedPoint = useAppStore((state) => state.selectedPoint);
+  const selectedStateId = useAppStore((state) => state.selectedStateId);
+  const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
   const bottomPanelOpen = useAppStore((state) => state.bottomPanelOpen);
   const bottomActiveTab = useAppStore((state) => state.bottomActiveTab);
   const setBottomPanelOpen = useAppStore((state) => state.setBottomPanelOpen);
@@ -339,7 +340,7 @@ function BottomPanel() {
           show_chart
         </span>
         <span className="text-sm font-semibold text-slate-900">
-          Open Analytics
+          Run Analysis
         </span>
       </motion.button>
     );
@@ -386,7 +387,7 @@ function BottomPanel() {
         </motion.button>
       </div>
 
-      {selectedPoint ? (
+      {selectedStateId && selectedDistrictId ? (
         <motion.div
           key={bottomActiveTab}
           initial={{ opacity: 0, y: 10 }}
@@ -394,20 +395,20 @@ function BottomPanel() {
           transition={{ duration: 0.2 }}
         >
           {bottomActiveTab === "time-series" && (
-            <TimeSeriesTab lat={selectedPoint.lat} lng={selectedPoint.lng} />
+            <TimeSeriesTab lat={0} lng={0} />
           )}
           {bottomActiveTab === "trend" && (
-            <TrendTab lat={selectedPoint.lat} lng={selectedPoint.lng} />
+            <TrendTab lat={0} lng={0} />
           )}
           {bottomActiveTab === "statistics" && (
-            <StatisticsTab lat={selectedPoint.lat} lng={selectedPoint.lng} />
+            <StatisticsTab lat={0} lng={0} />
           )}
           {bottomActiveTab === "export" && <ExportTab />}
         </motion.div>
       ) : (
         <div className="mt-5 flex items-center justify-center py-10">
           <p className="text-sm text-slate-500">
-            Select a point on the map to view data
+            Select a region on the map to view data
           </p>
         </div>
       )}
