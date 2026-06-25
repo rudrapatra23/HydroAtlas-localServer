@@ -9,6 +9,11 @@ export interface SelectedPoint {
   lng: number;
 }
 
+export interface RegionOption {
+  id: string;
+  name: string;
+}
+
 export interface AppState {
   selectedPoint: SelectedPoint | null;
   selectedLayer: LayerKey;
@@ -19,6 +24,10 @@ export interface AppState {
   layers: Record<LayerKey, { enabled: boolean; opacity: number }>;
   bottomPanelOpen: boolean;
   bottomActiveTab: BottomTab;
+  states: RegionOption[];
+  districts: RegionOption[];
+  selectedStateId: string | null;
+  selectedDistrictId: string | null;
   setSelectedPoint: (point: SelectedPoint | null) => void;
   setSelectedLayer: (layer: LayerKey) => void;
   setLeftSidebarOpen: (isOpen: boolean) => void;
@@ -29,6 +38,10 @@ export interface AppState {
   setLayerOpacity: (layer: LayerKey, opacity: number) => void;
   setBottomPanelOpen: (isOpen: boolean) => void;
   setBottomActiveTab: (tab: BottomTab) => void;
+  setStates: (states: RegionOption[]) => void;
+  setDistricts: (districts: RegionOption[]) => void;
+  setSelectedStateId: (id: string | null) => void;
+  setSelectedDistrictId: (id: string | null) => void;
 }
 
 const INITIAL_TIMELINE_DATE = "2026-06-15";
@@ -47,6 +60,10 @@ export const useAppStore = create<AppState>((set) => ({
   },
   bottomPanelOpen: false,
   bottomActiveTab: "time-series",
+  states: [],
+  districts: [],
+  selectedStateId: null,
+  selectedDistrictId: null,
   setSelectedPoint: (point) => set({ selectedPoint: point }),
   setSelectedLayer: (layer) => set({ selectedLayer: layer }),
   setLeftSidebarOpen: (isOpen) => set({ leftSidebarOpen: isOpen }),
@@ -72,4 +89,8 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   setBottomPanelOpen: (isOpen) => set({ bottomPanelOpen: isOpen }),
   setBottomActiveTab: (tab) => set({ bottomActiveTab: tab }),
+  setStates: (states) => set({ states }),
+  setDistricts: (districts) => set({ districts }),
+  setSelectedStateId: (id) => set({ selectedStateId: id, selectedDistrictId: null }),
+  setSelectedDistrictId: (id) => set({ selectedDistrictId: id }),
 }));

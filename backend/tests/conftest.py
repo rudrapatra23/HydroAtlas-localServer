@@ -11,7 +11,6 @@ from domain.ports.dataset_repository import DatasetRepository
 from domain.ports.storage_port import StoragePort
 from infrastructure.db.climate_asset_model import Base
 
-
 @pytest.fixture(scope="function")
 async def in_memory_db_session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)

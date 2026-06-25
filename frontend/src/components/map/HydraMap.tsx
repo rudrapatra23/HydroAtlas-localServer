@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import maplibregl, {
   Map,
   Marker,
@@ -7,6 +7,7 @@ import maplibregl, {
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useAppStore } from "../../stores/useAppStore";
+import { getDistrictsGeojson } from "../../api/boundaries";
 
 
 
@@ -80,6 +81,16 @@ function HydraMap() {
   const markerRef = useRef<Marker | null>(null);
   const selectedPoint = useAppStore((state) => state.selectedPoint);
   const setSelectedPoint = useAppStore((state) => state.setSelectedPoint);
+  const selectedStateId = useAppStore((state) => state.selectedStateId);
+  const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
+  const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
+  const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
+  const districtGeojsonRef = useRef<any | null>(null);
+
+  const emptyFeatureCollection = useMemo(
+    () => ({ type: "FeatureCollection", features: [] as any[] }),
+    []
+  );
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -113,9 +124,86 @@ function HydraMap() {
           duration: 0,
         }
       );
+
+      if (!map.getSource("districts")) {
+        map.addSource("districts", {
+          type: "geojson",
+          data: emptyFeatureCollection as any,
+        });
+      }
+
+      if (!map.getLayer("districts-fill")) {
+        map.addLayer({
+          id: "districts-fill",
+          type: "fill",
+          source: "districts",
+          paint: {
+            "fill-color": "#2563EB",
+            "fill-opacity": 0.08,
+          },
+        });
+      }
+
+      if (!map.getLayer("districts-line")) {
+        map.addLayer({
+          id: "districts-line",
+          type: "line",
+          source: "districts",
+          paint: {
+            "line-color": "#1D4ED8",
+            "line-width": 1,
+            "line-opacity": 0.5,
+          },
+        });
+      }
+
+      if (!map.getLayer("districts-selected-fill")) {
+        map.addLayer({
+          id: "districts-selected-fill",
+          type: "fill",
+          source: "districts",
+          filter: ["==", ["get", "district_id"], ""],
+          paint: {
+            "fill-color": "#F59E0B",
+            "fill-opacity": 0.28,
+          },
+        });
+      }
+
+      if (!map.getLayer("districts-selected-line")) {
+        map.addLayer({
+          id: "districts-selected-line",
+          type: "line",
+          source: "districts",
+          filter: ["==", ["get", "district_id"], ""],
+          paint: {
+            "line-color": "#F59E0B",
+            "line-width": 2.5,
+            "line-opacity": 0.95,
+          },
+        });
+      }
     });
 
     map.on("click", (event) => {
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: ["districts-fill"],
+      });
+      const feature = features[0];
+      const districtId = feature?.properties?.district_id as string | undefined;
+      const stateId = feature?.properties?.state_id as string | undefined;
+      if (districtId && stateId) {
+        markerRef.current?.remove();
+        setSelectedPoint(null);
+        if (selectedStateId !== stateId) {
+          setSelectedStateId(stateId);
+          queueMicrotask(() => setSelectedDistrictId(districtId));
+        } else {
+          setSelectedDistrictId(districtId);
+        }
+        return;
+      }
+
       markerRef.current?.remove();
 
       markerRef.current = new maplibregl.Marker({
@@ -140,7 +228,115 @@ function HydraMap() {
       markerRef.current = null;
       mapRef.current = null;
     };
-  }, [setSelectedPoint]);
+  }, [
+    emptyFeatureCollection,
+    selectedStateId,
+    setSelectedDistrictId,
+    setSelectedPoint,
+    setSelectedStateId,
+  ]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    let cancelled = false;
+
+    async function loadDistricts(mapInstance: Map) {
+      const source = mapInstance.getSource("districts") as any;
+      if (!source) return;
+
+      if (!selectedStateId) {
+        districtGeojsonRef.current = emptyFeatureCollection;
+        source.setData(emptyFeatureCollection as any);
+        return;
+      }
+
+      try {
+        const geojson = await getDistrictsGeojson(selectedStateId);
+        if (cancelled) return;
+        districtGeojsonRef.current = geojson as any;
+        source.setData(geojson as any);
+      } catch (error) {
+        if (cancelled) return;
+        districtGeojsonRef.current = emptyFeatureCollection;
+        source.setData(emptyFeatureCollection as any);
+      }
+    }
+
+    if (map.isStyleLoaded()) {
+      loadDistricts(map);
+    } else {
+      map.once("load", () => loadDistricts(map));
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [emptyFeatureCollection, selectedStateId]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const districtId = selectedDistrictId ?? "";
+    if (map.getLayer("districts-selected-fill")) {
+      map.setFilter("districts-selected-fill", [
+        "==",
+        ["get", "district_id"],
+        districtId,
+      ]);
+    }
+    if (map.getLayer("districts-selected-line")) {
+      map.setFilter("districts-selected-line", [
+        "==",
+        ["get", "district_id"],
+        districtId,
+      ]);
+    }
+
+    if (!selectedDistrictId) return;
+    const geojson = districtGeojsonRef.current;
+    const feature = geojson?.features?.find(
+      (f: any) => f?.properties?.district_id === selectedDistrictId
+    );
+    const geometry = feature?.geometry;
+    if (!geometry) return;
+
+    const bounds = (() => {
+      const coords: any[] = [];
+      const pushCoords = (c: any) => {
+        if (!c) return;
+        if (typeof c[0] === "number" && typeof c[1] === "number") {
+          coords.push(c);
+          return;
+        }
+        for (const child of c) pushCoords(child);
+      };
+      pushCoords(geometry.coordinates);
+      if (coords.length === 0) return null;
+      let minX = coords[0][0];
+      let minY = coords[0][1];
+      let maxX = coords[0][0];
+      let maxY = coords[0][1];
+      for (const [x, y] of coords) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      return [
+        [minX, minY],
+        [maxX, maxY],
+      ] as [[number, number], [number, number]];
+    })();
+    if (!bounds) return;
+
+    map.fitBounds(bounds, {
+      padding: { top: 80, bottom: 80, left: 80, right: 80 },
+      duration: 700,
+    });
+  }, [selectedDistrictId]);
 
   // Update marker if selectedPoint changes externally
   useEffect(() => {

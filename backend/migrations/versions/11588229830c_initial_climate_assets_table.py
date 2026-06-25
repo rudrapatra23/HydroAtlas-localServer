@@ -1,17 +1,9 @@
-"""initial climate_assets table
-
-Revision ID: 11588229830c
-Revises:
-Create Date: 2026-06-17 13:05:43.117000
-
-"""
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
 
-# revision identifiers, used by Alembic.
 revision: str = '11588229830c'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None

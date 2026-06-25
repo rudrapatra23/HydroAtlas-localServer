@@ -30,7 +30,6 @@ class ERA5Provider(Provider):
         if not self._client:
             raise ProviderError("Provider not bootstrapped")
 
-        # Convert DownloadRequest to era5-fetch request
         era5_request = {
             "variable": request.variable,
             "year": request.year,
@@ -38,10 +37,8 @@ class ERA5Provider(Provider):
             "region": request.region,
         }
 
-        # Call era5-fetch
         result = await self._client.download(**era5_request)
 
-        # Convert era5-fetch result to DownloadResponse
         return DownloadResponse(
             success=True,
             file_path=result.file_path,

@@ -1,5 +1,7 @@
 import { useAppStore } from "../../stores/useAppStore";
 import { motion, AnimatePresence } from "framer-motion";
+import { useEffect } from "react";
+import { getDistricts, getStates } from "../../api/boundaries";
 
 interface ToggleProps {
   checked: boolean;
@@ -48,6 +50,45 @@ function DataExplorer() {
   const toggleDataset = useAppStore((state) => state.toggleDataset);
   const toggleLayer = useAppStore((state) => state.toggleLayer);
   const setLayerOpacity = useAppStore((state) => state.setLayerOpacity);
+  const states = useAppStore((state) => state.states);
+  const districts = useAppStore((state) => state.districts);
+  const selectedStateId = useAppStore((state) => state.selectedStateId);
+  const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
+  const setStates = useAppStore((state) => state.setStates);
+  const setDistricts = useAppStore((state) => state.setDistricts);
+  const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
+  const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
+
+  // Fetch states on mount
+  useEffect(() => {
+    async function fetchStates() {
+      try {
+        const data = await getStates();
+        setStates(data.map((item: any) => ({ id: item.state_id, name: item.name })));
+      } catch (error) {
+        console.error("Failed to fetch states:", error);
+      }
+    }
+    fetchStates();
+  }, [setStates]);
+
+  // Fetch districts when selected state changes
+  useEffect(() => {
+    if (!selectedStateId) {
+      setDistricts([]);
+      return;
+    }
+    const stateId = selectedStateId;
+    async function fetchDistricts() {
+      try {
+        const data = await getDistricts(stateId);
+        setDistricts(data.map((item: any) => ({ id: item.district_id, name: item.name })));
+      } catch (error) {
+        console.error("Failed to fetch districts:", error);
+      }
+    }
+    fetchDistricts();
+  }, [selectedStateId, setDistricts]);
 
   return (
     <div className="relative select-none flex items-start">
@@ -100,6 +141,48 @@ function DataExplorer() {
 
             {/* Content Lists */}
             <div className="space-y-7">
+              {/* Region Selection Section */}
+              <div className="space-y-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                  Region
+                </p>
+                <div className="space-y-2.5">
+                  {/* State Dropdown */}
+                  <div className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5">
+                    <label className="text-xs text-slate-500 mb-1.5 block">State</label>
+                    <select
+                      value={selectedStateId || ""}
+                      onChange={(e) => setSelectedStateId(e.target.value || null)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">Select a state</option>
+                      {states.map((state) => (
+                        <option key={state.id} value={state.id}>
+                          {state.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {/* District Dropdown */}
+                  <div className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5">
+                    <label className="text-xs text-slate-500 mb-1.5 block">District</label>
+                    <select
+                      value={selectedDistrictId || ""}
+                      onChange={(e) => setSelectedDistrictId(e.target.value || null)}
+                      disabled={!selectedStateId}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="">Select a district</option>
+                      {districts.map((district) => (
+                        <option key={district.id} value={district.id}>
+                          {district.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               {/* Dataset Management Section */}
               <div className="space-y-3">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">

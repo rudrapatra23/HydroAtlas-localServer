@@ -22,11 +22,9 @@ class DatasetService:
         self,
         request: DownloadRequest,
     ) -> DownloadResponse:
-        """Download climate data via provider and register it (idempotent)."""
         if not self.provider:
             raise ValueError("No provider configured for DatasetService")
 
-        # Single repository lookup: check if asset exists already
         existing_asset = await self.repository.get_by_period(
             year=request.year,
             month=request.month,
@@ -34,16 +32,14 @@ class DatasetService:
             variable=request.variable,
         )
         if existing_asset:
-            # Return existing asset as DownloadResponse
             return DownloadResponse(
                 success=True,
-                file_path=None,  # No local file for existing assets
+                file_path=None,
                 checksum=existing_asset.checksum,
                 file_size=existing_asset.file_size,
                 error_message=None,
             )
 
-        # Asset doesn't exist: download, upload, save
         download_result = await self.provider.download(request)
         if not download_result.success or not download_result.file_path:
             return download_result
@@ -68,7 +64,6 @@ class DatasetService:
         try:
             saved_asset = await self.repository.save(asset)
         except Exception:
-            # Rollback: delete uploaded object if repository save fails
             self.storage.delete(storage_key)
             raise
 
