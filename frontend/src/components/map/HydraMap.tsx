@@ -1,19 +1,15 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, {
-  Map,
+  Map as MapLibreMap,
   StyleSpecification,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useAppStore } from "../../stores/useAppStore";
-import {
-  getDistrictsGeojson,
-} from "../../api/boundaries";
+import { getDistrictsGeojson } from "../../api/boundaries";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const DEFAULT_STATS_YEAR = 2024;
 const DEFAULT_STATS_MONTH = 1;
-
-
 
 const lightBasemapStyle: StyleSpecification = {
   version: 8,
@@ -42,9 +38,17 @@ const lightBasemapStyle: StyleSpecification = {
   ],
 };
 
+interface LegendThresholds {
+  p5: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p95: number;
+}
+
 function HydraMap() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<Map | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
   const selectedVariable = useAppStore((state) => state.selectedVariable);
@@ -52,6 +56,8 @@ function HydraMap() {
   const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
   const districtGeojsonRef = useRef<any | null>(null);
   const geojsonLoadedForStateRef = useRef<string | null>(null);
+
+  const [legendThresholds, setLegendThresholds] = useState<LegendThresholds | null>(null);
 
   const emptyFeatureCollection = useMemo(
     () => ({ type: "FeatureCollection", features: [] as any[] }),
@@ -74,23 +80,19 @@ function HydraMap() {
     if (!response.ok) {
       throw new Error(`Request failed: ${response.status} ${response.statusText}`);
     }
-    const json = (await response.json()) as {
+    return (await response.json()) as {
       state_id: string;
       year: number;
       month: number;
       variable: string;
       districts: Array<{ district_id: string; mean: number; min: number; max: number }>;
     };
-    console.log("[choropleth] stats response", json);
-    return json;
   }
 
   function applyChoropleth(
     source: any,
     baseGeojson: any,
-    stats: {
-      districts: Array<{ district_id: string; mean: number }>;
-    }
+    stats: { districts: Array<{ district_id: string; mean: number }> }
   ) {
     const byDistrictId = new Map<string, number>();
     for (const item of stats.districts) {
@@ -99,44 +101,29 @@ function HydraMap() {
       }
     }
 
-    const features = (baseGeojson.features ?? []) as any[];
-    let featureWithIdCount = 0;
-    let matchedCount = 0;
-    const missingIds: string[] = [];
-    for (const f of features) {
-      const districtId = f?.properties?.district_id as string | undefined;
-      if (!districtId) continue;
-      featureWithIdCount += 1;
-      if (byDistrictId.has(districtId)) {
-        matchedCount += 1;
-      } else if (missingIds.length < 20) {
-        missingIds.push(districtId);
-      }
-    }
-    console.log("[choropleth] geojson features", {
-      totalFeatures: features.length,
-      featuresWithDistrictId: featureWithIdCount,
-      matched: matchedCount,
-      allMatched: featureWithIdCount > 0 && matchedCount === featureWithIdCount,
-      sampleMissingDistrictIds: missingIds,
-    });
-
     const means = Array.from(byDistrictId.values());
     if (means.length === 0) {
+      setLegendThresholds(null);
       source.setData(baseGeojson);
       return;
     }
 
-    let min = means[0];
-    let max = means[0];
-    for (const v of means) {
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
-    const denom = max - min;
-    console.log("[choropleth] frontend mean range", { min, max, denom });
+    const sorted = [...means].sort((a, b) => a - b);
+    const getPercentile = (p: number) => {
+      const index = (sorted.length - 1) * p;
+      const lower = Math.floor(index);
+      const upper = Math.ceil(index);
+      if (lower === upper) return sorted[lower];
+      return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
+    };
 
-    const firstFiveNormalized: Array<{ district_id: string; mean: number; norm: number }> = [];
+    const p5 = getPercentile(0.05);
+    const p25 = getPercentile(0.25);
+    const p50 = getPercentile(0.50);
+    const p75 = getPercentile(0.75);
+    const p95 = getPercentile(0.95);
+
+    setLegendThresholds({ p5, p25, p50, p75, p95 });
 
     const joined = {
       ...baseGeojson,
@@ -147,41 +134,43 @@ function HydraMap() {
         if (mean === undefined) {
           return {
             ...f,
-            properties: {
-              ...f.properties,
-              mean: null,
-              norm: null,
-            },
+            properties: { ...f.properties, mean: null, norm: null },
           };
         }
-        const norm = denom === 0 ? 0.5 : (mean - min) / denom;
-        if (firstFiveNormalized.length < 5) {
-          firstFiveNormalized.push({ district_id: districtId, mean, norm });
+
+        let norm = 0;
+        if (p95 === p5) {
+          norm = 0.5;
+        } else if (mean <= p5) {
+          norm = 0;
+        } else if (mean >= p95) {
+          norm = 1;
+        } else if (mean <= p25) {
+          norm = 0.0 + 0.25 * ((mean - p5) / (p25 - p5 || 1));
+        } else if (mean <= p50) {
+          norm = 0.25 + 0.25 * ((mean - p25) / (p50 - p25 || 1));
+        } else if (mean <= p75) {
+          norm = 0.5 + 0.25 * ((mean - p50) / (p75 - p50 || 1));
+        } else {
+          norm = 0.75 + 0.25 * ((mean - p75) / (p95 - p75 || 1));
         }
+
         return {
           ...f,
-          properties: {
-            ...f.properties,
-            mean,
-            norm,
-          },
+          properties: { ...f.properties, mean, norm },
         };
       }),
     };
 
-    console.log("[choropleth] first five normalized", firstFiveNormalized);
     source.setData(joined);
   }
 
   useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) {
-      return;
-    }
+    if (!mapContainerRef.current || mapRef.current) return;
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: lightBasemapStyle,
-      // Remove fixed bounds so user can pan outside India after load
       minZoom: 3.2,
       maxZoom: 12,
       attributionControl: false,
@@ -194,11 +183,10 @@ function HydraMap() {
 
     map.on("load", () => {
       map.resize();
-      // Fit map to India bounds with padding on load
       map.fitBounds(
         [
-          [67.5, 6], // SW
-          [97.5, 37.5], // NE
+          [67.5, 6],
+          [97.5, 37.5],
         ],
         {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
@@ -206,88 +194,70 @@ function HydraMap() {
         }
       );
 
-      if (!map.getSource("districts")) {
-        map.addSource("districts", {
-          type: "geojson",
-          data: emptyFeatureCollection as any,
-        });
-      }
+      map.addSource("districts", {
+        type: "geojson",
+        data: emptyFeatureCollection as any,
+      });
 
-      if (!map.getLayer("districts-fill")) {
-        map.addLayer({
-          id: "districts-fill",
-          type: "fill",
-          source: "districts",
-          paint: {
-            "fill-color": [
-              "case",
-              ["has", "norm"],
-              [
-                "interpolate",
-                ["linear"],
-                ["get", "norm"],
-                0,
-                "#2563EB",
-                0.25,
-                "#16A34A",
-                0.5,
-                "#FACC15",
-                0.75,
-                "#F97316",
-                1,
-                "#DC2626",
-              ],
-              "#2563EB",
+      // Updated: Sequential Blues scale from White (0.0) to Dark Blue (1.0)
+      map.addLayer({
+        id: "districts-fill",
+        type: "fill",
+        source: "districts",
+        paint: {
+          "fill-color": [
+            "case",
+            ["has", "norm"],
+            [
+              "interpolate",
+              ["linear"],
+              ["get", "norm"],
+              0.0, "#F7FBFF",
+              0.25, "#C6DBEF",
+              0.5, "#6BAED6",
+              0.75, "#2171B5",
+              1.0, "#08306B",
             ],
-            "fill-opacity": [
-              "case",
-              ["has", "norm"],
-              0.55,
-              0.08,
-            ],
-          },
-        });
-      }
+            "#F7FBFF",
+          ],
+          "fill-opacity": ["case", ["has", "norm"], 0.85, 0.05],
+        },
+      });
 
-      if (!map.getLayer("districts-line")) {
-        map.addLayer({
-          id: "districts-line",
-          type: "line",
-          source: "districts",
-          paint: {
-            "line-color": "#1D4ED8",
-            "line-width": 1,
-            "line-opacity": 0.5,
-          },
-        });
-      }
+      // Updated: Darker border color so white/light-blue districts stay visible
+      map.addLayer({
+        id: "districts-line",
+        type: "line",
+        source: "districts",
+        paint: {
+          "line-color": "#1E293B",
+          "line-width": 0.5,
+          "line-opacity": 0.25,
+        },
+      });
 
-      if (!map.getLayer("districts-selected-fill")) {
-        map.addLayer({
-          id: "districts-selected-fill",
-          type: "fill",
-          source: "districts",
-          filter: ["==", ["get", "district_id"], ""],
-          paint: {
-            "fill-color": "#F59E0B",
-            "fill-opacity": 0.28,
-          },
-        });
-      }
+      map.addLayer({
+        id: "districts-selected-fill",
+        type: "fill",
+        source: "districts",
+        filter: ["==", ["get", "district_id"], ""],
+        paint: {
+          "fill-color": "#FFFFFF",
+          "fill-opacity": 0.1,
+        },
+      });
 
-      if (!map.getLayer("districts-selected-line")) {
-        map.addLayer({
-          id: "districts-selected-line",
-          type: "line",
-          source: "districts",
-          filter: ["==", ["get", "district_id"], ""],
-          paint: {
-            "line-color": "#F59E0B",
-            "line-width": 2.5,
-            "line-opacity": 0.95,
-          },
-        });
-      }
+      map.addLayer({
+        id: "districts-selected-line",
+        type: "line",
+        source: "districts",
+        filter: ["==", ["get", "district_id"], ""],
+        paint: {
+          "line-color": "#0F172A",
+          "line-width": 2.2,
+          "line-opacity": 1,
+        },
+      });
     });
 
     map.on("click", (event) => {
@@ -311,12 +281,7 @@ function HydraMap() {
       map.remove();
       mapRef.current = null;
     };
-  }, [
-    emptyFeatureCollection,
-    selectedStateId,
-    setSelectedDistrictId,
-    setSelectedStateId,
-  ]);
+  }, [emptyFeatureCollection, selectedStateId, setSelectedDistrictId, setSelectedStateId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -324,13 +289,14 @@ function HydraMap() {
 
     let cancelled = false;
 
-    async function loadDistricts(mapInstance: Map) {
+    async function loadDistricts(mapInstance: MapLibreMap) {
       const source = mapInstance.getSource("districts") as any;
       if (!source) return;
 
       if (!selectedStateId) {
         districtGeojsonRef.current = emptyFeatureCollection;
         geojsonLoadedForStateRef.current = null;
+        setLegendThresholds(null);
         source.setData(emptyFeatureCollection as any);
         return;
       }
@@ -340,7 +306,6 @@ function HydraMap() {
         if (cancelled) return;
         districtGeojsonRef.current = geojson as any;
         geojsonLoadedForStateRef.current = selectedStateId;
-        source.setData(geojson as any);
 
         try {
           const stats = await fetchStateDistrictStatistics(selectedStateId, selectedVariable);
@@ -373,8 +338,7 @@ function HydraMap() {
     const map = mapRef.current;
     const source = map?.getSource("districts") as any;
     const baseGeojson = districtGeojsonRef.current;
-    if (!map || !source || !baseGeojson) return;
-    if (!selectedStateId) return;
+    if (!map || !source || !baseGeojson || !selectedStateId) return;
     if (geojsonLoadedForStateRef.current !== selectedStateId) return;
 
     let cancelled = false;
@@ -403,18 +367,10 @@ function HydraMap() {
 
     const districtId = selectedDistrictId ?? "";
     if (map.getLayer("districts-selected-fill")) {
-      map.setFilter("districts-selected-fill", [
-        "==",
-        ["get", "district_id"],
-        districtId,
-      ]);
+      map.setFilter("districts-selected-fill", ["==", ["get", "district_id"], districtId]);
     }
     if (map.getLayer("districts-selected-line")) {
-      map.setFilter("districts-selected-line", [
-        "==",
-        ["get", "district_id"],
-        districtId,
-      ]);
+      map.setFilter("districts-selected-line", ["==", ["get", "district_id"], districtId]);
     }
 
     if (!selectedDistrictId) return;
@@ -437,20 +393,14 @@ function HydraMap() {
       };
       pushCoords(geometry.coordinates);
       if (coords.length === 0) return null;
-      let minX = coords[0][0];
-      let minY = coords[0][1];
-      let maxX = coords[0][0];
-      let maxY = coords[0][1];
+      let minX = coords[0][0], minY = coords[0][1], maxX = coords[0][0], maxY = coords[0][1];
       for (const [x, y] of coords) {
         if (x < minX) minX = x;
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
         if (y > maxY) maxY = y;
       }
-      return [
-        [minX, minY],
-        [maxX, maxY],
-      ] as [[number, number], [number, number]];
+      return [[minX, minY], [maxX, maxY]] as [[number, number], [number, number]];
     })();
     if (!bounds) return;
 
@@ -460,25 +410,56 @@ function HydraMap() {
     });
   }, [selectedDistrictId]);
 
+  const formatValue = (v: number) => {
+    if (v === 0) return "0";
+    return v.toFixed(v % 1 === 0 ? 0 : 1);
+  };
+
   return (
     <div className="absolute inset-0 z-0 overflow-hidden">
       <div ref={mapContainerRef} className="h-full w-full" />
-      <div className="absolute bottom-4 right-4 z-10 pointer-events-none">
-        <div className="rounded-[14px] border border-slate-900/6 bg-white/92 px-3 py-2.5 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px]">
-          <div className="text-[11px] font-semibold text-slate-600 mb-1">
-            Low → High
-          </div>
-          <div className="flex items-center gap-2">
-            <div
-              className="h-2.5 w-28 rounded"
-              style={{
-                background:
-                  "linear-gradient(90deg, #2563EB 0%, #16A34A 25%, #FACC15 50%, #F97316 75%, #DC2626 100%)",
-              }}
-            />
+      
+      {legendThresholds && (
+        <div className="absolute bottom-4 right-4 z-10 pointer-events-none">
+          <div className="rounded-[14px] border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px] min-w-[240px]">
+            <div className="text-[11px] font-bold tracking-wide uppercase text-slate-500 mb-2">
+              Distribution Scale ({selectedVariable})
+            </div>
+            <div className="relative mb-1.5">
+              {/* Updated: Matching CSS gradient for legend element */}
+              <div
+                className="h-3 w-full rounded-sm border border-slate-200/60"
+                style={{
+                  background:
+                    "linear-gradient(90deg, #F7FBFF 0%, #C6DBEF 25%, #6BAED6 50%, #2171B5 75%, #08306B 100%)",
+                }}
+              />
+            </div>
+            <div className="flex justify-between text-[10px] font-medium text-slate-600">
+              <div className="flex flex-col items-start">
+                <span>p5</span>
+                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p5)}</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span>p25</span>
+                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p25)}</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span>p50</span>
+                <span className="font-semibold text-slate-700">{formatValue(legendThresholds.p50)}</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span>p75</span>
+                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p75)}</span>
+              </div>
+              <div className="flex flex-col items-end">
+                <span>p95</span>
+                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p95)}</span>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
