@@ -11,3 +11,8 @@ xarray>=2024.1.0
 pytest>=8.0
 pytest-asyncio>=0.23
 aiosqlite>=0.20
+
+# ── ERA5 ingestion (ingestion/era5) ───────────────────────────────────
+cdsapi>=0.7,<1.0
+netCDF4>=1.6,<2.0
+python -m ingestion.era5.cli download 2026 1 --publish

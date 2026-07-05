@@ -20,7 +20,35 @@ class DatasetRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_by_period_range(
+        self,
+        start_year: int,
+        start_month: int,
+        end_year: int,
+        end_month: int,
+        provider: str,
+        variable: str,
+    ) -> Sequence[ClimateAsset]:
+        """Return every asset inside the inclusive ``[start, end]`` month range.
+
+        The result is ordered by ``(year, month)`` ascending so callers can
+        iterate sequentially without loading every raster into memory.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def list(self) -> Sequence[ClimateAsset]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_available_range(
+        self, provider: str, variable: str
+    ) -> tuple[int, int, int, int] | None:
+        """Return ``(min_year, min_month, max_year, max_month)`` for the
+        requested ``provider`` / ``variable`` combination, or ``None`` if
+        no assets exist. Used by routers to validate that incoming
+        month-range requests fall inside the known inventory.
+        """
         raise NotImplementedError
 
     @abstractmethod

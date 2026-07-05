@@ -1,46 +1,22 @@
-import { useAppStore } from "../../stores/useAppStore";
-import { motion, AnimatePresence } from "framer-motion";
-import { useEffect } from "react";
-import { getDistricts, getStates } from "../../api/boundaries";
+import {
+  useAppStore,
+  yearMonthToMonthString,
+  monthStringToYearMonth,
+  LayerKey,
+} from "../../stores/useAppStore";
+import { useEffect, useMemo } from "react";
+import { getDatasets, getDistricts, getStates } from "../../api/boundaries";
 
-interface ToggleProps {
-  checked: boolean;
-  onChange: () => void;
-}
+const MONTH_NAMES = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
-function Toggle({ checked, onChange }: ToggleProps) {
-  return (
-    <button
-      type="button"
-      onClick={onChange}
-      className={`relative h-6 w-11 rounded-full transition-colors duration-200 ease-out ${
-        checked ? "bg-blue-600" : "bg-slate-200"
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-out ${
-          checked ? "translate-x-5" : "translate-x-0"
-        }`}
-      />
-    </button>
-  );
-}
-
-interface IconContainerProps {
-  children: React.ReactNode;
-  color?: string;
-}
-
-function IconContainer({ children, color }: IconContainerProps) {
-  return (
-    <div
-      className="flex h-9 w-9 items-center justify-center rounded-[12px] transition-all duration-200 ease-out hover:bg-[rgba(15,23,42,0.06)] hover:scale-105"
-      style={{ backgroundColor: color || "rgba(15,23,42,0.04)" }}
-    >
-      {children}
-    </div>
-  );
-}
+const LAYER_LABELS: Record<LayerKey, { name: string; color: string; icon: string; variable: "precipitation" | "soil_moisture" | "surface_runoff" }> = {
+  rainfall: { name: "Rainfall", color: "#2563EB", icon: "rainy", variable: "precipitation" },
+  "soil-moisture": { name: "Soil Moisture", color: "#16A34A", icon: "water_drop", variable: "soil_moisture" },
+  runoff: { name: "Surface Runoff", color: "#EA580C", icon: "waves", variable: "surface_runoff" },
+};
 
 function DataExplorer() {
   const sidebarOpen = useAppStore((state) => state.leftSidebarOpen);
@@ -51,12 +27,18 @@ function DataExplorer() {
   const districts = useAppStore((state) => state.districts);
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
+  const startMonth = useAppStore((state) => state.startMonth);
+  const endMonth = useAppStore((state) => state.endMonth);
+  const availableRange = useAppStore((state) => state.availableRange);
   const setStates = useAppStore((state) => state.setStates);
   const setDistricts = useAppStore((state) => state.setDistricts);
   const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
   const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
+  const setStartMonth = useAppStore((state) => state.setStartMonth);
+  const setEndMonth = useAppStore((state) => state.setEndMonth);
+  const setAvailableRange = useAppStore((state) => state.setAvailableRange);
 
-  // Fetch states on mount
+  // Fetch states on mount.
   useEffect(() => {
     async function fetchStates() {
       try {
@@ -69,7 +51,56 @@ function DataExplorer() {
     fetchStates();
   }, [setStates]);
 
-  // Fetch districts when selected state changes
+  // Fetch the available dataset range on mount and seed the month
+  // pickers from it. The range is recomputed from every climate_assets
+  // row the backend exposes via GET /datasets, so the UI never assumes
+  // a fixed year/month. Only seeds the pickers on the first load —
+  // subsequent user edits to Start Month / End Month are preserved.
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchRange() {
+      try {
+        const assets = await getDatasets();
+        if (cancelled) return;
+        if (assets.length === 0) {
+          setAvailableRange(null);
+          return;
+        }
+        let minYear = assets[0].year;
+        let minMonth = assets[0].month;
+        let maxYear = assets[0].year;
+        let maxMonth = assets[0].month;
+        for (const asset of assets) {
+          const startKey = asset.year * 12 + (asset.month - 1);
+          const minKey = minYear * 12 + (minMonth - 1);
+          const maxKey = maxYear * 12 + (maxMonth - 1);
+          if (startKey < minKey) {
+            minYear = asset.year;
+            minMonth = asset.month;
+          }
+          if (startKey > maxKey) {
+            maxYear = asset.year;
+            maxMonth = asset.month;
+          }
+        }
+        setAvailableRange({ minYear, minMonth, maxYear, maxMonth });
+        if (!startMonth) setStartMonth(yearMonthToMonthString(minYear, minMonth));
+        if (!endMonth) setEndMonth(yearMonthToMonthString(maxYear, maxMonth));
+      } catch (error) {
+        console.error("Failed to fetch dataset range:", error);
+      }
+    }
+    fetchRange();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally only runs once on mount — the range itself is
+    // captured in `availableRange` and downstream effects react to
+    // startMonth/endMonth changes via the store.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch districts when selected state changes.
   useEffect(() => {
     if (!selectedStateId) {
       setDistricts([]);
@@ -87,196 +118,278 @@ function DataExplorer() {
     fetchDistricts();
   }, [selectedStateId, setDistricts]);
 
+  // Parse current month strings into {year, month} tuples. Memoised
+  // so the year/month select options don't rebuild on every render.
+  const startYM = useMemo(() => monthStringToYearMonth(startMonth), [startMonth]);
+  const endYM = useMemo(() => monthStringToYearMonth(endMonth), [endMonth]);
+
+  // Build the list of selectable years from availableRange so the user
+  // can jump directly from 2026 to 2017 without scrolling. Falls back
+  // to the current year ± 2 if the range hasn't loaded yet.
+  const yearOptions = useMemo(() => {
+    if (!availableRange) {
+      const fallback = new Date().getFullYear();
+      return [fallback - 1, fallback, fallback + 1];
+    }
+    const years: number[] = [];
+    for (let y = availableRange.minYear; y <= availableRange.maxYear; y++) {
+      years.push(y);
+    }
+    return years;
+  }, [availableRange]);
+
+  // Enforce Start Month <= End Month. If the user picks a Start that is
+  // after End, we snap End forward to match. If they pick an End that
+  // is before Start, we snap Start back. The store still stores
+  // ``YYYY-MM`` strings so the API payload is unchanged.
+  const handleStartChange = (year: number, month: number) => {
+    setStartMonth(yearMonthToMonthString(year, month));
+    const endKey = endYM ? endYM.year * 12 + endYM.month : -1;
+    const newKey = year * 12 + month;
+    if (newKey > endKey) {
+      setEndMonth(yearMonthToMonthString(year, month));
+    }
+  };
+
+  const handleEndChange = (year: number, month: number) => {
+    setEndMonth(yearMonthToMonthString(year, month));
+    const startKey = startYM ? startYM.year * 12 + startYM.month : Number.MAX_SAFE_INTEGER;
+    const newKey = year * 12 + month;
+    if (newKey < startKey) {
+      setStartMonth(yearMonthToMonthString(year, month));
+    }
+  };
+
+  // Collapsed state: show only a compact "Data Explorer" toggle.
+  if (!sidebarOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => setSidebarOpen(true)}
+        className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+        aria-label="Open data explorer"
+      >
+        <span className="material-symbols-rounded text-slate-600" style={{ fontSize: 18 }}>
+          menu
+        </span>
+        Data Explorer
+      </button>
+    );
+  }
+
   return (
-    <div className="relative select-none flex items-start">
-      <AnimatePresence mode="wait">
-        {!sidebarOpen ? (
-          /* 1. PERSISTENT FLOATING TRIGGER BUTTON */
-          <motion.button
-            key="menu-trigger"
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.8 }}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            transition={{ type: "spring", stiffness: 400, damping: 25 }}
-            type="button"
-            onClick={() => setSidebarOpen(true)}
-            className="flex h-12 w-12 items-center justify-center rounded-[20px] border border-slate-900/6 bg-white/92 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px] text-slate-600 cursor-pointer"
-          >
-            <span className="material-symbols-rounded" style={{ fontSize: 24 }}>
-              menu
-            </span>
-          </motion.button>
-        ) : (
-          /* 2. EXPANDED CONTROL INTERFACE SIDEBAR CARD */
-          <motion.div
-            key="explorer-card"
-            initial={{ opacity: 0, x: -30, scale: 0.98 }}
-            animate={{ opacity: 1, x: 0, scale: 1 }}
-            exit={{ opacity: 0, x: -30, scale: 0.98 }}
-            transition={{ type: "spring", stiffness: 380, damping: 28 }}
-            className="w-[320px] rounded-[20px] border border-slate-900/6 bg-white/92 p-5 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px] flex flex-col"
-          >
-            {/* Header Controls */}
-            <div className="flex items-center justify-between mb-6">
-              <p className="text-sm font-semibold text-slate-900 tracking-tight">
-                Data Explorer
-              </p>
-              <motion.button
-                whileHover={{ scale: 1.05, backgroundColor: "rgba(15,23,42,0.04)" }}
-                whileTap={{ scale: 0.95 }}
-                type="button"
-                onClick={() => setSidebarOpen(false)}
-                className="flex h-8 w-8 items-center justify-center rounded-full transition-colors duration-200 ease-out cursor-pointer"
+    <div className="w-[300px] rounded-md border border-slate-200 bg-white">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+        <p className="text-sm font-semibold text-slate-900">Data Explorer</p>
+        <button
+          type="button"
+          onClick={() => setSidebarOpen(false)}
+          className="flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100"
+          aria-label="Close data explorer"
+        >
+          <span className="material-symbols-rounded" style={{ fontSize: 16 }}>
+            close
+          </span>
+        </button>
+      </div>
+
+      <div className="px-4 py-4 space-y-5">
+        {/* REGION */}
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            Region
+          </p>
+          <div className="space-y-2">
+            <div>
+              <label htmlFor="state-select" className="block text-xs text-slate-600 mb-1">
+                State
+              </label>
+              <select
+                id="state-select"
+                value={selectedStateId || ""}
+                onChange={(e) => setSelectedStateId(e.target.value || null)}
+                className="w-full h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-800 outline-none transition-colors focus:border-slate-400"
               >
-                <span className="material-symbols-rounded text-slate-500" style={{ fontSize: 20 }}>
-                  close
-                </span>
-              </motion.button>
+                <option value="">Select a state</option>
+                {states.map((state) => (
+                  <option key={state.id} value={state.id}>
+                    {state.name}
+                  </option>
+                ))}
+              </select>
             </div>
+            <div>
+              <label htmlFor="district-select" className="block text-xs text-slate-600 mb-1">
+                District
+              </label>
+              <select
+                id="district-select"
+                value={selectedDistrictId || ""}
+                onChange={(e) => setSelectedDistrictId(e.target.value || null)}
+                disabled={!selectedStateId}
+                className="w-full h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-800 outline-none transition-colors focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                <option value="">Select a district</option>
+                {districts.map((district) => (
+                  <option key={district.id} value={district.id}>
+                    {district.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
 
-            {/* Content Lists */}
-            <div className="space-y-7">
-              {/* Region Selection Section */}
-              <div className="space-y-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                  Region
-                </p>
-                <div className="space-y-2.5">
-                  {/* State Dropdown */}
-                  <div className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5">
-                    <label className="text-xs text-slate-500 mb-1.5 block">State</label>
-                    <select
-                      value={selectedStateId || ""}
-                      onChange={(e) => setSelectedStateId(e.target.value || null)}
-                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="">Select a state</option>
-                      {states.map((state) => (
-                        <option key={state.id} value={state.id}>
-                          {state.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {/* District Dropdown */}
-                  <div className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5">
-                    <label className="text-xs text-slate-500 mb-1.5 block">District</label>
-                    <select
-                      value={selectedDistrictId || ""}
-                      onChange={(e) => setSelectedDistrictId(e.target.value || null)}
-                      disabled={!selectedStateId}
-                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <option value="">Select a district</option>
-                      {districts.map((district) => (
-                        <option key={district.id} value={district.id}>
-                          {district.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
+        {/* PERIOD */}
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            Period
+          </p>
+          <div className="space-y-2">
+            <PeriodRow
+              idPrefix="start"
+              label="Start month"
+              year={startYM?.year ?? yearOptions[0]}
+              month={startYM?.month ?? 1}
+              yearOptions={yearOptions}
+              onChange={handleStartChange}
+            />
+            <PeriodRow
+              idPrefix="end"
+              label="End month"
+              year={endYM?.year ?? yearOptions[yearOptions.length - 1]}
+              month={endYM?.month ?? 12}
+              yearOptions={yearOptions}
+              onChange={handleEndChange}
+            />
+          </div>
+        </div>
 
-              {/* Dataset Management Section */}
-              <div className="space-y-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                  Dataset
-                </p>
-                <div className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5">
-                  <div className="flex w-full items-center gap-3">
-                    <IconContainer>
-                      <span className="material-symbols-rounded text-slate-700" style={{ fontSize: 24 }}>
-                        public
-                      </span>
-                    </IconContainer>
-                    <span className="text-sm font-semibold text-slate-700">
-                      ERA5-Land
+        {/* DATASET */}
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            Dataset
+          </p>
+          <div className="flex items-center gap-2 h-9 px-2.5 rounded-md border border-slate-200 bg-slate-50">
+            <span className="material-symbols-rounded text-slate-500" style={{ fontSize: 18 }}>
+              public
+            </span>
+            <span className="text-sm font-medium text-slate-700">ERA5-Land</span>
+          </div>
+        </div>
+
+        {/* LAYERS */}
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            Layers
+          </p>
+          <div className="space-y-1">
+            {(Object.keys(LAYER_LABELS) as LayerKey[]).map((layerKey) => {
+              const data = LAYER_LABELS[layerKey];
+              const enabled = layers[layerKey].enabled;
+              return (
+                <div
+                  key={layerKey}
+                  className="flex items-center justify-between h-9 px-2.5 rounded-md border border-slate-200 bg-white"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="material-symbols-rounded"
+                      style={{
+                        fontSize: 18,
+                        color: data.color,
+                        opacity: enabled ? 1 : 0.4,
+                      }}
+                    >
+                      {data.icon}
+                    </span>
+                    <span
+                      className={`text-sm font-medium ${
+                        enabled ? "text-slate-700" : "text-slate-400"
+                      }`}
+                    >
+                      {data.name}
                     </span>
                   </div>
+                  <Toggle checked={enabled} onChange={() => toggleLayer(layerKey)} />
                 </div>
-              </div>
-
-              {/* GIS Map Layers Layout Configuration */}
-              <div className="space-y-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                  Layers
-                </p>
-                <div className="space-y-2.5">
-                  {Object.entries(layers).map(([key, layer]) => {
-                    const layerKey = key as keyof typeof layers;
-                    const layerData: Record<
-                      string,
-                      { name: string; color: string; icon: string }
-                    > = {
-                      rainfall: {
-                        name: "Rainfall",
-                        color: "#2563EB",
-                        icon: "rainy",
-                      },
-                      "soil-moisture": {
-                        name: "Soil Moisture",
-                        color: "#16A34A",
-                        icon: "water_drop",
-                      },
-                      runoff: {
-                        name: "Runoff",
-                        color: "#EA580C",
-                        icon: "waves",
-                      },
-                    };
-                    const data = layerData[layerKey];
-                    if (!data) return null;
-
-                    return (
-                      <div
-                        key={layerKey}
-                        className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-3.5"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div
-                            className="flex items-center gap-3 cursor-pointer transition-transform duration-180 ease-out hover:translate-x-[2px]"
-                            onClick={() => toggleLayer(layerKey)}
-                          >
-                            <IconContainer color={`${data.color}14`}>
-                              <span
-                                className="material-symbols-rounded"
-                                style={{
-                                  fontSize: 24,
-                                  color: data.color,
-                                  opacity: layer.enabled ? 1 : 0.4,
-                                }}
-                              >
-                                {data.icon}
-                              </span>
-                            </IconContainer>
-                            <span
-                              className={`text-sm font-medium transition-colors duration-200 ${
-                                layer.enabled ? "text-slate-800" : "text-slate-400"
-                              }`}
-                            >
-                              {data.name}
-                            </span>
-                          </div>
-                          <div onClick={(e) => e.stopPropagation()}>
-                            <Toggle
-                              checked={layer.enabled}
-                              onChange={() => toggleLayer(layerKey)}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
+  );
+}
+
+function PeriodRow({
+  idPrefix,
+  label,
+  year,
+  month,
+  yearOptions,
+  onChange,
+}: {
+  idPrefix: string;
+  label: string;
+  year: number;
+  month: number;
+  yearOptions: number[];
+  onChange: (year: number, month: number) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-slate-600 mb-1">{label}</label>
+      <div className="flex gap-1.5">
+        <select
+          id={`${idPrefix}-year`}
+          aria-label={`${label} year`}
+          value={year}
+          onChange={(e) => onChange(Number(e.target.value), month)}
+          className="flex-1 h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-800 outline-none transition-colors focus:border-slate-400 tabular-nums"
+        >
+          {yearOptions.map((y) => (
+            <option key={y} value={y}>
+              {y}
+            </option>
+          ))}
+        </select>
+        <select
+          id={`${idPrefix}-month`}
+          aria-label={`${label} month`}
+          value={month}
+          onChange={(e) => onChange(year, Number(e.target.value))}
+          className="flex-[1.2] h-9 rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-800 outline-none transition-colors focus:border-slate-400"
+        >
+          {MONTH_NAMES.map((name, idx) => (
+            <option key={name} value={idx + 1}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+      className={`relative h-5 w-9 rounded-full transition-colors ${
+        checked ? "bg-blue-600" : "bg-slate-200"
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+          checked ? "translate-x-4" : "translate-x-0"
+        }`}
+      />
+    </button>
   );
 }
 

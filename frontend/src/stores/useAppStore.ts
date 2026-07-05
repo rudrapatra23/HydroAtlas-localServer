@@ -25,18 +25,35 @@ export interface StateDistrictStatisticsItem {
 
 export interface StateDistrictStatistics {
   state_id: string;
-  year: number;
-  month: number;
+  start_year: number;
+  start_month: number;
+  end_year: number;
+  end_month: number;
   variable: Variable;
   districts: StateDistrictStatisticsItem[];
 }
+
+export interface AvailableRange {
+  minYear: number;
+  minMonth: number;
+  maxYear: number;
+  maxMonth: number;
+}
+
+/**
+ * The fundamental time unit is ONE MONTH. Start / End are stored as
+ * ``YYYY-MM`` strings so the picker can never surface individual days,
+ * and every analysis request reflects a true inclusive month range.
+ */
+export type MonthString = string; // e.g. "2024-03"
 
 export interface AppState {
   selectedLayer: LayerKey;
   leftSidebarOpen: boolean;
   rightSidebarOpen: boolean;
-  startDate: string;
-  endDate: string;
+  startMonth: MonthString;
+  endMonth: MonthString;
+  availableRange: AvailableRange | null;
   datasets: Record<DatasetKey, boolean>;
   layers: Record<LayerKey, { enabled: boolean }>;
   bottomPanelOpen: boolean;
@@ -46,15 +63,14 @@ export interface AppState {
   selectedStateId: string | null;
   selectedDistrictId: string | null;
   selectedVariable: Variable;
-  selectedYear: number;
-  selectedMonth: number;
   stateDistrictStatistics: StateDistrictStatistics | null;
   districtStats: DistrictStats | null;
   setSelectedLayer: (layer: LayerKey) => void;
   setLeftSidebarOpen: (isOpen: boolean) => void;
   setRightSidebarOpen: (isOpen: boolean) => void;
-  setStartDate: (date: string) => void;
-  setEndDate: (date: string) => void;
+  setStartMonth: (month: MonthString) => void;
+  setEndMonth: (month: MonthString) => void;
+  setAvailableRange: (range: AvailableRange | null) => void;
   toggleDataset: (dataset: DatasetKey) => void;
   toggleLayer: (layer: LayerKey) => void;
   setBottomPanelOpen: (isOpen: boolean) => void;
@@ -64,21 +80,20 @@ export interface AppState {
   setSelectedStateId: (id: string | null) => void;
   setSelectedDistrictId: (id: string | null) => void;
   setSelectedVariable: (variable: Variable) => void;
-  setSelectedYear: (year: number) => void;
-  setSelectedMonth: (month: number) => void;
   setStateDistrictStatistics: (stats: StateDistrictStatistics | null) => void;
   setDistrictStats: (stats: DistrictStats | null) => void;
 }
-
-const INITIAL_START_DATE = "2026-06-01";
-const INITIAL_END_DATE = "2026-06-25";
 
 export const useAppStore = create<AppState>((set) => ({
   selectedLayer: "rainfall",
   leftSidebarOpen: true,
   rightSidebarOpen: true,
-  startDate: INITIAL_START_DATE,
-  endDate: INITIAL_END_DATE,
+  // Initialised from the backend's available dataset range on first load
+  // (see DataExplorer). Empty until then so the UI never queries with a
+  // hardcoded year/month.
+  startMonth: "",
+  endMonth: "",
+  availableRange: null,
   datasets: { "era5-land": true },
   layers: {
     rainfall: { enabled: true },
@@ -92,15 +107,14 @@ export const useAppStore = create<AppState>((set) => ({
   selectedStateId: null,
   selectedDistrictId: null,
   selectedVariable: "precipitation",
-  selectedYear: 2026,
-  selectedMonth: 5,
   stateDistrictStatistics: null,
   districtStats: null,
   setSelectedLayer: (layer) => set({ selectedLayer: layer }),
   setLeftSidebarOpen: (isOpen) => set({ leftSidebarOpen: isOpen }),
   setRightSidebarOpen: (isOpen) => set({ rightSidebarOpen: isOpen }),
-  setStartDate: (date) => set({ startDate: date }),
-  setEndDate: (date) => set({ endDate: date }),
+  setStartMonth: (month) => set({ startMonth: month }),
+  setEndMonth: (month) => set({ endMonth: month }),
+  setAvailableRange: (range) => set({ availableRange: range }),
   toggleDataset: (dataset) =>
     set((state) => ({
       datasets: { ...state.datasets, [dataset]: !state.datasets[dataset] },
@@ -119,8 +133,36 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedStateId: (id) => set({ selectedStateId: id, selectedDistrictId: null }),
   setSelectedDistrictId: (id) => set({ selectedDistrictId: id }),
   setSelectedVariable: (variable) => set({ selectedVariable: variable }),
-  setSelectedYear: (year) => set({ selectedYear: year }),
-  setSelectedMonth: (month) => set({ selectedMonth: month }),
   setStateDistrictStatistics: (stats) => set({ stateDistrictStatistics: stats }),
   setDistrictStats: (stats) => set({ districtStats: stats }),
 }));
+
+/**
+ * Convert a ``YYYY-MM`` month string (the only format the picker ever
+ * produces — ``<input type="month">``) into the ``{year, month}`` tuple
+ * the backend's statistics endpoints expect. Returns ``null`` when the
+ * input is empty or malformed so callers can defer the API call until
+ * a real month is selected.
+ */
+export function monthStringToYearMonth(
+  monthString: string
+): { year: number; month: number } | null {
+  if (!monthString) return null;
+  const match = /^(\d{4})-(\d{2})$/.exec(monthString);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return null;
+  if (month < 1 || month > 12) return null;
+  return { year, month };
+}
+
+/**
+ * Build a ``YYYY-MM`` string from a ``(year, month)`` tuple. Used to
+ * seed the month pickers from the backend's available range so the
+ * frontend never has to know a hardcoded year or month.
+ */
+export function yearMonthToMonthString(year: number, month: number): string {
+  const mm = String(month).padStart(2, "0");
+  return `${year}-${mm}`;
+}

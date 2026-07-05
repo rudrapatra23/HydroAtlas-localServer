@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.entities.climate_asset import ClimateAsset, ClimateAssetStatus
@@ -90,11 +90,87 @@ class PostgresDatasetRepository(DatasetRepository):
             return None
         return _to_domain(model)
 
+    async def list_by_period_range(
+        self,
+        start_year: int,
+        start_month: int,
+        end_year: int,
+        end_month: int,
+        provider: str,
+        variable: str,
+    ) -> Sequence[ClimateAsset]:
+        """Return every asset in the inclusive ``[start, end]`` month range.
+
+        Uses a tuple comparison on ``(year, month)`` so the database can
+        satisfy the range with a single index scan. Results are ordered
+        ascending so the caller iterates the time series sequentially.
+        """
+        period_column = tuple_(ClimateAssetModel.year, ClimateAssetModel.month)
+        stmt = (
+            select(ClimateAssetModel)
+            .where(
+                ClimateAssetModel.provider == provider,
+                ClimateAssetModel.variable == variable,
+                period_column >= (start_year, start_month),
+                period_column <= (end_year, end_month),
+            )
+            .order_by(ClimateAssetModel.year.asc(), ClimateAssetModel.month.asc())
+        )
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [_to_domain(m) for m in models]
+
     async def list(self) -> Sequence[ClimateAsset]:
         stmt = select(ClimateAssetModel).order_by(ClimateAssetModel.created_at.desc())
         result = await self.session.execute(stmt)
         models = result.scalars().all()
         return [_to_domain(m) for m in models]
+
+    async def get_available_range(
+        self, provider: str, variable: str
+    ) -> tuple[int, int, int, int] | None:
+        """Return ``(min_year, min_month, max_year, max_month)`` in a
+        single aggregate query so the router can validate incoming
+        month-range requests without scanning every asset row.
+        """
+        stmt = select(
+            func.min(ClimateAssetModel.year),
+            func.min(ClimateAssetModel.month),
+            func.max(ClimateAssetModel.year),
+            func.max(ClimateAssetModel.month),
+        ).where(
+            ClimateAssetModel.provider == provider,
+            ClimateAssetModel.variable == variable,
+        )
+        result = await self.session.execute(stmt)
+        row = result.one()
+        min_year, min_month, max_year, max_month = row
+        if min_year is None or max_year is None:
+            return None
+        # ``min(month)`` may not co-locate with ``min(year)`` when the
+        # earliest year only contains later months, so resolve the true
+        # boundaries with a second pass that joins on the year extremes.
+        if min_year == max_year:
+            return (int(min_year), int(min_month), int(max_year), int(max_month))
+
+        earliest_stmt = select(ClimateAssetModel.month).where(
+            ClimateAssetModel.provider == provider,
+            ClimateAssetModel.variable == variable,
+            ClimateAssetModel.year == min_year,
+        )
+        latest_stmt = select(ClimateAssetModel.month).where(
+            ClimateAssetModel.provider == provider,
+            ClimateAssetModel.variable == variable,
+            ClimateAssetModel.year == max_year,
+        )
+        earliest_months = (await self.session.execute(earliest_stmt)).scalars().all()
+        latest_months = (await self.session.execute(latest_stmt)).scalars().all()
+        return (
+            int(min_year),
+            int(min(earliest_months)),
+            int(max_year),
+            int(max(latest_months)),
+        )
 
     async def delete(self, asset_id: str) -> None:
         stmt = select(ClimateAssetModel).where(ClimateAssetModel.id == asset_id)

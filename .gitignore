@@ -14,14 +14,63 @@ frontend/.vite/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
 
 # Temporary files
 *.log
 *.tmp
 commit-script.ps1
+
+# Local agent files
+.kimchi/
+
+# Secrets and local environment
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+
+# ERA5 local cache and runtime data
+backend/data/era5/cache/
+backend/data/era5/2026/
+backend/data/era5/locks/
+backend/data/era5/logs/
+backend/data/era5/tmp/
+backend/data/era5/manifest.json
+
+# Local raster debug outputs
+backend/temp_raster.nc
+backend/clipped_output/
+
+# Personal rough notes and helper docs
+ARCHITECTURE.md
+PROJECT.md
+PROJECT_STATE.md
+imp.txt
+backend/downloadInS3.md
+backend/React*.txt
+backend/diff.txt
+
+# Accidental root package lock only
+/package-lock.json
+
+# Local tests and verification artifacts
+backend/tests/

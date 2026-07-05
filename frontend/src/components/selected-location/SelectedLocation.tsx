@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
-import { useAppStore, Variable } from "../../stores/useAppStore";
+import {
+  useAppStore,
+  Variable,
+  monthStringToYearMonth,
+} from "../../stores/useAppStore";
 import { motion } from "framer-motion";
-import { getDistrictStatistics } from "../../api/boundaries";
+import { getDistrictRangeStatistics } from "../../api/boundaries";
 
 interface KpiConfig {
   icon: string;
@@ -26,8 +30,8 @@ function IconContainer({
 }) {
   return (
     <div
-      className="flex h-9 w-9 items-center justify-center rounded-[12px] transition-all duration-200 ease-out"
-      style={{ backgroundColor: color ? `${color}14` : "rgba(15,23,42,0.04)" }}
+      className="flex h-8 w-8 items-center justify-center rounded-md"
+      style={{ backgroundColor: color ? `${color}1A` : "#F1F5F9" }}
     >
       {children}
     </div>
@@ -48,37 +52,30 @@ function KpiCard({
   color: string;
 }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      whileHover={{ y: -2, boxShadow: "0 8px 24px rgba(15,23,42,0.08)" }}
-      className="rounded-[16px] border border-slate-900/6 bg-slate-50/60 p-4 transition-all duration-180 ease-out"
-    >
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-3">
-          <IconContainer color={color}>
-            <span
-              className="material-symbols-rounded"
-              style={{ fontSize: 24, color }}
-            >
-              {icon}
-            </span>
-          </IconContainer>
-          <span className="text-xs font-semibold text-slate-500 uppercase tracking-[0.14em]">
-            {label}
-          </span>
-        </div>
-        <div className="flex items-baseline gap-1.5">
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center gap-2.5 mb-2">
+        <IconContainer color={color}>
           <span
-            className="text-2xl font-semibold tracking-tight"
-            style={{ color }}
+            className="material-symbols-rounded"
+            style={{ fontSize: 20, color }}
           >
-            {value.toFixed(6)}
+            {icon}
           </span>
-          <span className="text-sm text-slate-500">{unit}</span>
-        </div>
+        </IconContainer>
+        <span className="text-xs font-medium text-slate-600">
+          {label}
+        </span>
       </div>
-    </motion.div>
+      <div className="flex items-baseline gap-1.5">
+        <span
+          className="text-xl font-semibold tabular-nums tracking-tight"
+          style={{ color }}
+        >
+          {value.toFixed(6)}
+        </span>
+        <span className="text-xs text-slate-500">{unit}</span>
+      </div>
+    </div>
   );
 }
 
@@ -89,28 +86,69 @@ function SelectedLocation() {
   const districts = useAppStore((state) => state.districts);
   const rightSidebarOpen = useAppStore((state) => state.rightSidebarOpen);
   const setRightSidebarOpen = useAppStore((state) => state.setRightSidebarOpen);
+  const startMonth = useAppStore((state) => state.startMonth);
+  const endMonth = useAppStore((state) => state.endMonth);
   const [stats, setStats] = useState<Record<Variable, { mean: number; min: number; max: number }> | null>(null);
   const [loading, setLoading] = useState(false);
+  const [noDatasetForPeriod, setNoDatasetForPeriod] = useState(false);
+  const [monthsProcessed, setMonthsProcessed] = useState(0);
 
   const selectedState = states.find((s) => s.id === selectedStateId);
   const selectedDistrict = districts.find((d) => d.id === selectedDistrictId);
 
+  // Every change to the selected Start Month or End Month — or to the
+  // selected district — must immediately re-run the analysis request.
   useEffect(() => {
     if (!selectedDistrictId) {
       setStats(null);
+      setNoDatasetForPeriod(false);
+      setMonthsProcessed(0);
       return;
     }
 
     const districtId = selectedDistrictId;
+    const start = monthStringToYearMonth(startMonth);
+    const end = monthStringToYearMonth(endMonth);
+    if (!start || !end) {
+      setStats(null);
+      setLoading(false);
+      return;
+    }
+    if (start.year * 12 + start.month > end.year * 12 + end.month) {
+      setStats(null);
+      setNoDatasetForPeriod(false);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     setLoading(true);
+    setNoDatasetForPeriod(false);
 
     async function fetchAllStats() {
       try {
         const [precipStats, soilStats, runoffStats] = await Promise.all([
-          getDistrictStatistics(districtId, 2024, 1, "precipitation"),
-          getDistrictStatistics(districtId, 2024, 1, "soil_moisture"),
-          getDistrictStatistics(districtId, 2024, 1, "surface_runoff"),
+          getDistrictRangeStatistics(districtId, {
+            start_year: start!.year,
+            start_month: start!.month,
+            end_year: end!.year,
+            end_month: end!.month,
+            variable: "precipitation",
+          }),
+          getDistrictRangeStatistics(districtId, {
+            start_year: start!.year,
+            start_month: start!.month,
+            end_year: end!.year,
+            end_month: end!.month,
+            variable: "soil_moisture",
+          }),
+          getDistrictRangeStatistics(districtId, {
+            start_year: start!.year,
+            start_month: start!.month,
+            end_year: end!.year,
+            end_month: end!.month,
+            variable: "surface_runoff",
+          }),
         ]);
         if (cancelled) return;
         setStats({
@@ -118,8 +156,19 @@ function SelectedLocation() {
           soil_moisture: { mean: soilStats.mean, min: soilStats.min, max: soilStats.max },
           surface_runoff: { mean: runoffStats.mean, min: runoffStats.min, max: runoffStats.max },
         });
+        setMonthsProcessed(precipStats.months_processed);
       } catch (error) {
-        console.error("Failed to fetch statistics:", error);
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        if (/404/.test(message)) {
+          setStats(null);
+          setMonthsProcessed(0);
+          setNoDatasetForPeriod(true);
+        } else {
+          console.error("Failed to fetch statistics:", error);
+          setStats(null);
+          setMonthsProcessed(0);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -130,20 +179,33 @@ function SelectedLocation() {
     return () => {
       cancelled = true;
     };
-  }, [selectedDistrictId]);
+  }, [selectedDistrictId, startMonth, endMonth]);
+
+  const periodLabel = (() => {
+    const start = monthStringToYearMonth(startMonth);
+    const end = monthStringToYearMonth(endMonth);
+    if (!start || !end) return "";
+    const monthNames = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const startLabel = `${monthNames[start.month - 1]} ${start.year}`;
+    const endLabel = `${monthNames[end.month - 1]} ${end.year}`;
+    return startLabel === endLabel ? startLabel : `${startLabel} → ${endLabel}`;
+  })();
 
   if (!rightSidebarOpen) {
     return (
       <motion.button
         initial={false}
         animate={{ scale: 1 }}
-        whileHover={{ scale: 1.05, y: -2 }}
-        whileTap={{ scale: 0.98 }}
+        whileTap={{ scale: 0.97 }}
         type="button"
         onClick={() => setRightSidebarOpen(true)}
-        className="mt-0 flex h-12 w-12 items-center justify-center rounded-[20px] border border-slate-900/6 bg-white/92 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px] transition-all duration-180 ease-out hover:shadow-[0_16px_50px_rgba(15,23,42,0.12)]"
+        className="mt-0 flex h-10 w-10 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50"
+        aria-label="Open selected region"
       >
-        <span className="material-symbols-rounded text-slate-600" style={{ fontSize: 20 }}>
+        <span className="material-symbols-rounded" style={{ fontSize: 18 }}>
           info
         </span>
       </motion.button>
@@ -158,40 +220,34 @@ function SelectedLocation() {
     <motion.div
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
-      whileHover={{ y: -1, boxShadow: "0 16px 50px rgba(15,23,42,0.12)" }}
-      className="mt-0 w-full rounded-[20px] border border-slate-900/6 bg-white/92 px-5 py-5 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px] transition-all duration-180 ease-out"
+      className="mt-0 w-full rounded-md border border-slate-200 bg-white px-4 py-4 transition-colors"
     >
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm font-semibold text-slate-900 tracking-tight">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-semibold text-slate-900">
           Selected Region
         </p>
-        <motion.button
-          whileHover={{ scale: 1.05, backgroundColor: "rgba(15,23,42,0.04)" }}
-          whileTap={{ scale: 0.95 }}
+        <button
           type="button"
           onClick={() => setRightSidebarOpen(false)}
-          className="flex h-8 w-8 items-center justify-center rounded-full transition-colors duration-200 ease-out"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100"
+          aria-label="Close selected region"
         >
-          <span className="material-symbols-rounded text-slate-500" style={{ fontSize: 18 }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 16 }}>
             close
           </span>
-        </motion.button>
+        </button>
       </div>
 
-      <div className="flex gap-2 rounded-[14px] bg-slate-50/80 px-3 py-2.5 mb-4">
+      <div className="flex gap-3 rounded-md bg-slate-50 border border-slate-200 px-3 py-2.5 mb-3">
         <div className="flex-1">
-          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.16em]">
-            State
-          </span>
+          <span className="text-xs text-slate-500 block">State</span>
           <p className="text-sm font-medium text-slate-800">
             {selectedState?.name || "-"}
           </p>
         </div>
         <div className="w-px bg-slate-200" />
         <div className="flex-1">
-          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.16em]">
-            District
-          </span>
+          <span className="text-xs text-slate-500 block">District</span>
           <p className="text-sm font-medium text-slate-800">
             {selectedDistrict?.name || "-"}
           </p>
@@ -200,10 +256,10 @@ function SelectedLocation() {
 
       {loading ? (
         <div className="flex items-center justify-center py-8">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-blue-600" />
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-slate-700" />
         </div>
       ) : stats ? (
-        <div className="grid grid-cols-1 gap-3 mb-4">
+        <div className="grid grid-cols-1 gap-2 mb-3">
           {KPI_CONFIGS.map((kpi) => (
             <KpiCard
               key={kpi.variable}
@@ -215,18 +271,25 @@ function SelectedLocation() {
             />
           ))}
         </div>
+      ) : noDatasetForPeriod ? (
+        <div className="flex items-center justify-center py-8 text-sm text-slate-500">
+          No climate data available for the selected period.
+        </div>
       ) : (
         <div className="flex items-center justify-center py-8 text-sm text-slate-500">
           No data available
         </div>
       )}
 
-      <div className="flex justify-between items-center text-[11px] text-slate-500">
+      <div className="flex justify-between items-center text-xs text-slate-500 pt-2 border-t border-slate-100">
         <div className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-          <span>Data source: ERA5-Land</span>
+          <span>ERA5-Land</span>
         </div>
-        <span>Jan 2024</span>
+        <span className="tabular-nums">
+          {periodLabel}
+          {monthsProcessed > 0 ? ` · ${monthsProcessed}mo` : ""}
+        </span>
       </div>
     </motion.div>
   );

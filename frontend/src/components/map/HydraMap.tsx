@@ -4,12 +4,10 @@ import maplibregl, {
   StyleSpecification,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { useAppStore } from "../../stores/useAppStore";
-import { getDistrictsGeojson } from "../../api/boundaries";
+import { useAppStore, monthStringToYearMonth } from "../../stores/useAppStore";
+import { getDistrictsGeojson, getStateDistrictRangeStatistics } from "../../api/boundaries";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-const DEFAULT_STATS_YEAR = 2024;
-const DEFAULT_STATS_MONTH = 1;
 
 const lightBasemapStyle: StyleSpecification = {
   version: 8,
@@ -52,6 +50,8 @@ function HydraMap() {
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
   const selectedVariable = useAppStore((state) => state.selectedVariable);
+  const startMonth = useAppStore((state) => state.startMonth);
+  const endMonth = useAppStore((state) => state.endMonth);
   const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
   const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
   const districtGeojsonRef = useRef<any | null>(null);
@@ -64,29 +64,21 @@ function HydraMap() {
     []
   );
 
-  async function fetchStateDistrictStatistics(stateId: string, variable: string) {
-    const response = await fetch(
-      `${API_BASE_URL}/states/${encodeURIComponent(stateId)}/districts/statistics`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          year: DEFAULT_STATS_YEAR,
-          month: DEFAULT_STATS_MONTH,
-          variable,
-        }),
-      }
-    );
-    if (!response.ok) {
-      throw new Error(`Request failed: ${response.status} ${response.statusText}`);
-    }
-    return (await response.json()) as {
-      state_id: string;
-      year: number;
-      month: number;
-      variable: string;
-      districts: Array<{ district_id: string; mean: number; min: number; max: number }>;
-    };
+  async function fetchStateDistrictStatistics(
+    stateId: string,
+    variable: string,
+    startYear: number,
+    startMonth: number,
+    endYear: number,
+    endMonth: number,
+  ) {
+    return getStateDistrictRangeStatistics(stateId, {
+      start_year: startYear,
+      start_month: startMonth,
+      end_year: endYear,
+      end_month: endMonth,
+      variable,
+    });
   }
 
   function applyChoropleth(
@@ -307,8 +299,18 @@ function HydraMap() {
         districtGeojsonRef.current = geojson as any;
         geojsonLoadedForStateRef.current = selectedStateId;
 
+        const start = monthStringToYearMonth(startMonth);
+        const end = monthStringToYearMonth(endMonth);
+        if (!start || !end) return;
         try {
-          const stats = await fetchStateDistrictStatistics(selectedStateId, selectedVariable);
+          const stats = await fetchStateDistrictStatistics(
+            selectedStateId,
+            selectedVariable,
+            start.year,
+            start.month,
+            end.year,
+            end.month,
+          );
           if (cancelled) return;
           applyChoropleth(source, geojson as any, stats);
         } catch (error) {
@@ -332,20 +334,31 @@ function HydraMap() {
     return () => {
       cancelled = true;
     };
-  }, [emptyFeatureCollection, selectedStateId, selectedVariable]);
+  }, [emptyFeatureCollection, selectedStateId, selectedVariable, startMonth, endMonth]);
 
   useEffect(() => {
     const map = mapRef.current;
     const source = map?.getSource("districts") as any;
     const baseGeojson = districtGeojsonRef.current;
     if (!map || !source || !baseGeojson || !selectedStateId) return;
-    if (geojsonLoadedForStateRef.current !== selectedStateId) return;
+    const stateId = selectedStateId;
+    if (geojsonLoadedForStateRef.current !== stateId) return;
 
     let cancelled = false;
 
     async function refetchAndApply() {
+      const start = monthStringToYearMonth(startMonth);
+      const end = monthStringToYearMonth(endMonth);
+      if (!start || !end) return;
       try {
-        const stats = await fetchStateDistrictStatistics(selectedStateId, selectedVariable);
+        const stats = await fetchStateDistrictStatistics(
+          stateId,
+          selectedVariable,
+          start.year,
+          start.month,
+          end.year,
+          end.month,
+        );
         if (cancelled) return;
         applyChoropleth(source, baseGeojson, stats);
       } catch (error) {
@@ -359,7 +372,7 @@ function HydraMap() {
     return () => {
       cancelled = true;
     };
-  }, [selectedStateId, selectedVariable]);
+  }, [selectedStateId, selectedVariable, startMonth, endMonth]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -421,14 +434,13 @@ function HydraMap() {
       
       {legendThresholds && (
         <div className="absolute bottom-4 right-4 z-10 pointer-events-none">
-          <div className="rounded-[14px] border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_12px_40px_rgba(15,23,42,0.08)] backdrop-blur-[22px] min-w-[240px]">
-            <div className="text-[11px] font-bold tracking-wide uppercase text-slate-500 mb-2">
+          <div className="rounded-md border border-slate-200 bg-white px-3 py-2.5 min-w-[240px]">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
               Distribution Scale ({selectedVariable})
             </div>
             <div className="relative mb-1.5">
-              {/* Updated: Matching CSS gradient for legend element */}
               <div
-                className="h-3 w-full rounded-sm border border-slate-200/60"
+                className="h-3 w-full rounded-sm border border-slate-200"
                 style={{
                   background:
                     "linear-gradient(90deg, #F7FBFF 0%, #C6DBEF 25%, #6BAED6 50%, #2171B5 75%, #08306B 100%)",
@@ -438,23 +450,23 @@ function HydraMap() {
             <div className="flex justify-between text-[10px] font-medium text-slate-600">
               <div className="flex flex-col items-start">
                 <span>p5</span>
-                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p5)}</span>
+                <span className="font-semibold text-slate-900 tabular-nums">{formatValue(legendThresholds.p5)}</span>
               </div>
               <div className="flex flex-col items-center">
                 <span>p25</span>
-                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p25)}</span>
+                <span className="font-semibold text-slate-900 tabular-nums">{formatValue(legendThresholds.p25)}</span>
               </div>
               <div className="flex flex-col items-center">
                 <span>p50</span>
-                <span className="font-semibold text-slate-700">{formatValue(legendThresholds.p50)}</span>
+                <span className="font-semibold text-slate-700 tabular-nums">{formatValue(legendThresholds.p50)}</span>
               </div>
               <div className="flex flex-col items-center">
                 <span>p75</span>
-                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p75)}</span>
+                <span className="font-semibold text-slate-900 tabular-nums">{formatValue(legendThresholds.p75)}</span>
               </div>
               <div className="flex flex-col items-end">
                 <span>p95</span>
-                <span className="font-semibold text-slate-900">{formatValue(legendThresholds.p95)}</span>
+                <span className="font-semibold text-slate-900 tabular-nums">{formatValue(legendThresholds.p95)}</span>
               </div>
             </div>
           </div>
