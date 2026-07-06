@@ -66,6 +66,12 @@ function HydraMap() {
   }, [selectedStateId]);
 
   const [legendThresholds, setLegendThresholds] = useState<LegendThresholds | null>(null);
+  // Tracks whether the map currently has a committed choropleth on the
+  // source. Used to gate the non-destructive render contract: when a
+  // fetch is in flight and we already have a choropleth, the previous
+  // visualization is kept visible and an "Updating…" badge is overlaid.
+  const [hasChoropleth, setHasChoropleth] = useState(false);
+  const [mapLoading, setMapLoading] = useState(false);
 
   const emptyFeatureCollection = useMemo(
     () => ({ type: "FeatureCollection", features: [] as any[] }),
@@ -297,78 +303,83 @@ function HydraMap() {
 
     let cancelled = false;
 
-    async function loadDistricts(mapInstance: MapLibreMap) {
-      const source = mapInstance.getSource("districts") as any;
-      if (!source) return;
+    // Single source of truth for the non-destructive render contract:
+    // the closure-scoped `cancelled` flag ensures that a stale in-flight
+    // request can never overwrite a fresher one. All geometry and
+    // choropleth mutations happen inside `run()` so the cleanup of the
+    // previous effect run can atomically suppress its commits.
+    setMapLoading(true);
 
+    async function run(mapInstance: MapLibreMap) {
+      const source = mapInstance.getSource("districts") as any;
+      if (!source) {
+        if (!cancelled) setMapLoading(false);
+        return;
+      }
+
+      // Deselection: clear everything immediately, no fetch issued.
       if (!selectedStateId) {
+        if (cancelled) return;
         districtGeojsonRef.current = emptyFeatureCollection;
         geojsonLoadedForStateRef.current = null;
         setLegendThresholds(null);
         source.setData(emptyFeatureCollection as any);
+        setHasChoropleth(false);
+        setMapLoading(false);
+        return;
+      }
+
+      // Distinguish a state change from a variable / month / year change.
+      // The previous choropleth is meaningful only when the state geometry
+      // is unchanged; on a state change the old mean/norm values belong to
+      // a different set of districts and must be cleared immediately so we
+      // never display them on the wrong geometry.
+      const stateChanged =
+        geojsonLoadedForStateRef.current !== selectedStateId;
+
+      if (stateChanged) {
+        source.setData(emptyFeatureCollection as any);
+        setLegendThresholds(null);
+        setHasChoropleth(false);
+      }
+
+      let baseGeojson = districtGeojsonRef.current;
+      if (stateChanged || !baseGeojson) {
+        try {
+          const geojson = await getDistrictsGeojson(selectedStateId);
+          if (cancelled) return;
+          baseGeojson = geojson as any;
+          districtGeojsonRef.current = baseGeojson;
+          geojsonLoadedForStateRef.current = selectedStateId;
+        } catch (error) {
+          if (cancelled) return;
+          // Geojson failed: clear and bail. We do not preserve any
+          // previous choropleth because the requested state has no
+          // geometry on the source.
+          districtGeojsonRef.current = emptyFeatureCollection;
+          geojsonLoadedForStateRef.current = null;
+          source.setData(emptyFeatureCollection as any);
+          setHasChoropleth(false);
+          setMapLoading(false);
+          return;
+        }
+      }
+
+      const start = monthStringToYearMonth(startMonth);
+      const end = monthStringToYearMonth(endMonth);
+      if (!start || !end) {
+        if (!cancelled) {
+          // We have valid geometry but no valid range. Surface the
+          // uncoloured geometry so the user can still see districts.
+          if (stateChanged) source.setData(baseGeojson as any);
+          setMapLoading(false);
+        }
         return;
       }
 
       try {
-        const geojson = await getDistrictsGeojson(selectedStateId);
-        if (cancelled) return;
-        districtGeojsonRef.current = geojson as any;
-        geojsonLoadedForStateRef.current = selectedStateId;
-
-        const start = monthStringToYearMonth(startMonth);
-        const end = monthStringToYearMonth(endMonth);
-        if (!start || !end) return;
-        try {
-          const stats = await fetchStateDistrictStatistics(
-            selectedStateId,
-            selectedVariable,
-            start.year,
-            start.month,
-            end.year,
-            end.month,
-          );
-          if (cancelled) return;
-          applyChoropleth(source, geojson as any, stats);
-        } catch (error) {
-          if (cancelled) return;
-          source.setData(geojson as any);
-        }
-      } catch (error) {
-        if (cancelled) return;
-        districtGeojsonRef.current = emptyFeatureCollection;
-        geojsonLoadedForStateRef.current = null;
-        source.setData(emptyFeatureCollection as any);
-      }
-    }
-
-    if (map.isStyleLoaded()) {
-      loadDistricts(map);
-    } else {
-      map.once("load", () => loadDistricts(map));
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [emptyFeatureCollection, selectedStateId, selectedVariable, startMonth, endMonth]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    const source = map?.getSource("districts") as any;
-    const baseGeojson = districtGeojsonRef.current;
-    if (!map || !source || !baseGeojson || !selectedStateId) return;
-    const stateId = selectedStateId;
-    if (geojsonLoadedForStateRef.current !== stateId) return;
-
-    let cancelled = false;
-
-    async function refetchAndApply() {
-      const start = monthStringToYearMonth(startMonth);
-      const end = monthStringToYearMonth(endMonth);
-      if (!start || !end) return;
-      try {
         const stats = await fetchStateDistrictStatistics(
-          stateId,
+          selectedStateId,
           selectedVariable,
           start.year,
           start.month,
@@ -376,19 +387,36 @@ function HydraMap() {
           end.month,
         );
         if (cancelled) return;
-        applyChoropleth(source, baseGeojson, stats);
+        applyChoropleth(source, baseGeojson as any, stats);
+        if (!cancelled) {
+          setHasChoropleth(true);
+          setMapLoading(false);
+        }
       } catch (error) {
         if (cancelled) return;
-        source.setData(baseGeojson);
+        // Stats failed. If the state changed we must surface the new
+        // geometry even without colour so the user knows the request
+        // reached the new state. If the state is unchanged we keep the
+        // previous choropleth + legend intact because they are still
+        // meaningful for the current geometry; the next successful
+        // refetch will replace them atomically.
+        if (stateChanged) {
+          source.setData(baseGeojson as any);
+        }
+        setMapLoading(false);
       }
     }
 
-    refetchAndApply();
+    if (map.isStyleLoaded()) {
+      run(map);
+    } else {
+      map.once("load", () => run(map));
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [selectedStateId, selectedVariable, startMonth, endMonth]);
+  }, [emptyFeatureCollection, selectedStateId, selectedVariable, startMonth, endMonth]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -485,6 +513,22 @@ function HydraMap() {
                 <span className="font-semibold text-slate-900 tabular-nums">{formatValue(legendThresholds.p95)}</span>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {mapLoading && (
+        <div className="absolute bottom-4 left-4 z-10 pointer-events-none">
+          <div
+            className="flex items-center gap-1.5 rounded-full bg-slate-900/80 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm backdrop-blur-sm"
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className="inline-block h-3 w-3 animate-spin rounded-full border border-white/40 border-t-white"
+              aria-hidden="true"
+            />
+            Updating…
           </div>
         </div>
       )}

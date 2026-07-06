@@ -440,6 +440,30 @@ function ExportTab({
   );
 }
 
+/**
+ * Small, non-blocking overlay rendered while a new query is in flight.
+ * The previous committed chart / KPI data stays visible underneath so
+ * the user never sees a destructive blank during district / month /
+ * year / range / layer-toggle transitions. Truthful: only signals that
+ * a refresh is in progress, never a fake percentage or fabricated
+ * backend stage.
+ */
+function RefreshingBadge({ label = "Updating…" }: { label?: string }) {
+  return (
+    <div
+      className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-full bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm backdrop-blur-sm"
+      role="status"
+      aria-live="polite"
+    >
+      <span
+        className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white"
+        aria-hidden="true"
+      />
+      {label}
+    </div>
+  );
+}
+
 function BottomPanel() {
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
@@ -478,6 +502,12 @@ function BottomPanel() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [monthsProcessed, setMonthsProcessed] = useState(0);
+  // Tracks whether at least one fetch for the current selection has
+  // ever settled. Used to distinguish "no data yet attempted" from a
+  // genuine empty / error result so we never render a misleading
+  // "No climate data available" message before the first request
+  // resolves.
+  const [hasAttempted, setHasAttempted] = useState(false);
 
   // Every change to Start Month, End Month, selected district, or layer
   // toggles must immediately re-fetch the per-month series for the
@@ -564,6 +594,7 @@ function BottomPanel() {
         }
         setSeries(next);
         setMonthsProcessed(processed);
+        setHasAttempted(true);
       } catch (error) {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : String(error);
@@ -580,6 +611,7 @@ function BottomPanel() {
           setMonthsProcessed(0);
           setErrorMessage("Failed to load data. Please try a different period.");
         }
+        setHasAttempted(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -665,28 +697,8 @@ function BottomPanel() {
 
       {selectedStateId && selectedDistrictId ? (
         <div>
-          {loading ? (
-            <div className="flex items-center justify-center py-10">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-slate-700" />
-            </div>
-          ) : errorMessage ? (
-            <div className="flex items-center justify-center py-10">
-              <p className="text-sm text-slate-500">{errorMessage}</p>
-            </div>
-          ) : noLayerEnabled ? (
-            <div className="flex items-center justify-center py-10">
-              <p className="text-sm text-slate-500">
-                Enable at least one layer in Data Explorer to view data.
-              </p>
-            </div>
-          ) : monthsProcessed === 0 ? (
-            <div className="flex items-center justify-center py-10">
-              <p className="text-sm text-slate-500">
-                No climate data available for the selected period.
-              </p>
-            </div>
-          ) : (
-            <>
+          {monthsProcessed > 0 ? (
+            <div className="relative">
               {bottomActiveTab === "time-series" && (
                 <TimeSeriesTab chart={seriesChart} />
               )}
@@ -713,10 +725,31 @@ function BottomPanel() {
                   series={series}
                   rangeLabel={rangeLabel}
                   districtId={selectedDistrictId}
-                  disabled={monthsProcessed === 0}
+                  disabled={false}
                 />
               )}
-            </>
+              {loading && <RefreshingBadge label="Processing new selection…" />}
+            </div>
+          ) : loading || !hasAttempted ? (
+            <div className="flex items-center justify-center py-10">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-slate-700" />
+            </div>
+          ) : errorMessage ? (
+            <div className="flex items-center justify-center py-10">
+              <p className="text-sm text-slate-500">{errorMessage}</p>
+            </div>
+          ) : noLayerEnabled ? (
+            <div className="flex items-center justify-center py-10">
+              <p className="text-sm text-slate-500">
+                Enable at least one layer in Data Explorer to view data.
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-10">
+              <p className="text-sm text-slate-500">
+                No climate data available for the selected period.
+              </p>
+            </div>
           )}
         </div>
       ) : (
