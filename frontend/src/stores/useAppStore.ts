@@ -10,29 +10,6 @@ export interface RegionOption {
   name: string;
 }
 
-export interface DistrictStats {
-  mean: number;
-  min: number;
-  max: number;
-}
-
-export interface StateDistrictStatisticsItem {
-  district_id: string;
-  mean: number;
-  min: number;
-  max: number;
-}
-
-export interface StateDistrictStatistics {
-  state_id: string;
-  start_year: number;
-  start_month: number;
-  end_year: number;
-  end_month: number;
-  variable: Variable;
-  districts: StateDistrictStatisticsItem[];
-}
-
 export interface AvailableRange {
   minYear: number;
   minMonth: number;
@@ -63,8 +40,6 @@ export interface AppState {
   selectedStateId: string | null;
   selectedDistrictId: string | null;
   selectedVariable: Variable;
-  stateDistrictStatistics: StateDistrictStatistics | null;
-  districtStats: DistrictStats | null;
   setSelectedLayer: (layer: LayerKey) => void;
   setLeftSidebarOpen: (isOpen: boolean) => void;
   setRightSidebarOpen: (isOpen: boolean) => void;
@@ -80,8 +55,6 @@ export interface AppState {
   setSelectedStateId: (id: string | null) => void;
   setSelectedDistrictId: (id: string | null) => void;
   setSelectedVariable: (variable: Variable) => void;
-  setStateDistrictStatistics: (stats: StateDistrictStatistics | null) => void;
-  setDistrictStats: (stats: DistrictStats | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -107,8 +80,6 @@ export const useAppStore = create<AppState>((set) => ({
   selectedStateId: null,
   selectedDistrictId: null,
   selectedVariable: "precipitation",
-  stateDistrictStatistics: null,
-  districtStats: null,
   setSelectedLayer: (layer) => set({ selectedLayer: layer }),
   setLeftSidebarOpen: (isOpen) => set({ leftSidebarOpen: isOpen }),
   setRightSidebarOpen: (isOpen) => set({ rightSidebarOpen: isOpen }),
@@ -133,8 +104,6 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedStateId: (id) => set({ selectedStateId: id, selectedDistrictId: null }),
   setSelectedDistrictId: (id) => set({ selectedDistrictId: id }),
   setSelectedVariable: (variable) => set({ selectedVariable: variable }),
-  setStateDistrictStatistics: (stats) => set({ stateDistrictStatistics: stats }),
-  setDistrictStats: (stats) => set({ districtStats: stats }),
 }));
 
 /**

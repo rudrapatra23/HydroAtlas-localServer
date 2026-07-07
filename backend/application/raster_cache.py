@@ -38,6 +38,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import asyncio
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -46,13 +47,20 @@ import tempfile
 import threading
 import time
 from types import TracebackType
-from typing import AsyncIterator, Iterable
+from typing import AsyncIterator, Iterable, Iterator
 
 import xarray as xr
 
 from domain.entities.climate_asset import ClimateAsset
 from domain.ports.storage_port import StoragePort
 from ingestion.era5.checksums import sha256_file
+from application.diagnostics import (
+    emit_native_event,
+    file_cache_maxsize,
+    get_request_id,
+    runtime_library_versions,
+    safe_log,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -81,6 +89,15 @@ _MAX_LOCK_REGISTRY_ENTRIES = 4096
 # total historical dataset size via the LRU sweep. ``0`` disables the
 # on-disk cache entirely.
 DEFAULT_RASTER_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+
+
+# ── Live-handle registry (diagnostic only)
+#
+# Tracks every OpenRasterHandle that is opened and not yet closed,
+# so we can correlate HDF failures with per-key and global handle
+# counts. The registry is protected by a module-level lock; all
+# mutations happen in finally blocks so diagnostic instrumentation
+# cannot alter application behavior.
 
 
 @dataclass
@@ -138,7 +155,21 @@ class OpenRasterHandle:
     dataset: xr.Dataset | xr.DataArray
     path: Path
     lease: RasterLease
+    handle_id: str = ""
     _closed: bool = False
+
+    def __post_init__(self) -> None:
+        """Register this handle in the global live-handle registry.
+
+        ``__post_init__`` is called by ``dataclasses`` after ``__init__``
+        returns. We assign a unique ``handle_id`` here (before ``close()``
+        can be called) and log the open event. All mutations are
+        guarded by ``_live_handle_lock``.
+
+        The registration is never undone outside ``close()``; if
+        ``close()`` is never called, ``__del__`` will release it.
+        """
+        _register_handle(self)
 
     def close(self) -> None:
         """Close the dataset and release the lease. Idempotent.
@@ -155,25 +186,46 @@ class OpenRasterHandle:
         if self._closed:
             return
         self._closed = True
+        emit_native_event(
+            "NATIVE_CLOSE_BEGIN",
+            file_path=self.path, cache_key=self.lease._key,
+        )
         try:
             self.dataset.close()
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "DATASET_CLOSE key=%s path=%s status=dataset_close_failed error=%s",
-                self.lease._key, self.path, exc,
+            emit_native_event(
+                "NATIVE_CLOSE_ERROR",
+                file_path=self.path, cache_key=self.lease._key,
+                extra={
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
+            )
+            safe_log(
+                logging.WARNING,
+                "DATASET_CLOSE key=%s path=%s request_id=%s status=dataset_close_failed error=%s",
+                self.lease._key, self.path, get_request_id(), exc,
             )
         else:
-            logger.info(
-                "DATASET_CLOSE key=%s path=%s status=ok",
-                self.lease._key, self.path,
+            emit_native_event(
+                "NATIVE_CLOSE_DONE",
+                file_path=self.path, cache_key=self.lease._key,
+            )
+            safe_log(
+                logging.INFO,
+                "DATASET_CLOSE key=%s path=%s request_id=%s status=ok",
+                self.lease._key, self.path, get_request_id(),
             )
         try:
             self.lease.release()
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "DATASET_CLOSE key=%s path=%s status=lease_release_failed error=%s",
-                self.lease._key, self.path, exc,
+            safe_log(
+                logging.WARNING,
+                "DATASET_CLOSE key=%s path=%s request_id=%s status=lease_release_failed error=%s",
+                self.lease._key, self.path, get_request_id(), exc,
             )
+        finally:
+            _unregister_handle(self)
 
     async def __aenter__(self) -> "OpenRasterHandle":
         return self
@@ -239,6 +291,78 @@ def cache_path_for(cache_root: Path, asset: ClimateAsset) -> Path:
 
 def cache_key_for(asset: ClimateAsset) -> CacheKey:
     return (asset.provider, asset.variable, asset.year, asset.month)
+
+
+# ── Live-handle registry (diagnostic only)
+#
+# Tracks every OpenRasterHandle that is opened and not yet closed,
+# so we can correlate HDF failures with per-key and global handle
+# counts. The registry is protected by a module-level lock; all
+# mutations happen in finally blocks so diagnostic instrumentation
+# cannot alter application behavior.
+
+_handle_id_counter: Iterator[int] = itertools.count(start=1)
+_live_handle_lock: threading.Lock = threading.Lock()
+_live_handles_by_key: dict[CacheKey, set[str]] = {}
+_global_live_handle_count: int = 0
+
+
+def _register_handle(handle: OpenRasterHandle) -> None:
+    """Register a newly-created ``OpenRasterHandle`` in the live-handle
+    registry. Generates a unique ``handle_id``, increments per-key and
+    global counts, and logs the open event via ``safe_log``.
+
+    Called from ``OpenRasterHandle.__post_init__``. All mutations are
+    guarded by ``_live_handle_lock`` and always released in ``finally``.
+    """
+    global _global_live_handle_count
+    with _live_handle_lock:
+        try:
+            handle_id = f"{next(_handle_id_counter)}"
+            handle.handle_id = handle_id
+            key = handle.lease._key
+            _live_handles_by_key.setdefault(key, set()).add(handle_id)
+            _global_live_handle_count += 1
+        finally:
+            # no-op; lock released implicitly
+            pass
+    per_key = len(_live_handles_by_key.get(handle.lease._key, {}))
+    safe_log(
+        logging.INFO,
+        "OPEN_HANDLE request_id=%s key=%s path=%s handle_id=%s "
+        "per_key_live=%d global_live=%d",
+        get_request_id(), handle.lease._key, handle.path,
+        handle_id, per_key, _global_live_handle_count,
+    )
+
+
+def _unregister_handle(handle: OpenRasterHandle) -> None:
+    """Remove a closed ``OpenRasterHandle`` from the live-handle registry.
+    Decrements per-key and global counts, logs the close event.
+
+    Called from ``OpenRasterHandle.close()`` after ``lease.release()``
+    in a ``finally`` block.``"""
+    global _global_live_handle_count
+    with _live_handle_lock:
+        try:
+            key = handle.lease._key
+            handles_for_key = _live_handles_by_key.get(key)
+            if handles_for_key is not None:
+                handles_for_key.discard(handle.handle_id)
+                if not handles_for_key:
+                    _live_handles_by_key.pop(key, None)
+            _global_live_handle_count -= 1
+        finally:
+            pass
+    safe_log(
+        logging.INFO,
+        "CLOSE_HANDLE request_id=%s key=%s path=%s handle_id=%s "
+        "per_key_live_after=%d global_live_after=%d",
+        get_request_id(), handle.lease._key, handle.path,
+        handle.handle_id,
+        len(_live_handles_by_key.get(handle.lease._key, {})),
+        _global_live_handle_count,
+    )
 
 
 # ── Single-flight lock registry
@@ -757,8 +881,8 @@ class RasterCache:
             wait_seconds = time.perf_counter() - t_wait_start
             logger.info(
                 "OPEN_DATASET key=%s wait_seconds=%.4f "
-                "status=cancelled_before_lock concurrent_readers=%d",
-                log_key, wait_seconds, active_before,
+                "status=cancelled_before_lock concurrent_readers=%d request_id=%s",
+                log_key, wait_seconds, active_before, get_request_id(),
             )
             raise
         try:
@@ -766,31 +890,78 @@ class RasterCache:
             active_after_enter = _open_counter.enter(key)
             t_open_start = time.perf_counter()
             try:
+                emit_native_event(
+                    "NATIVE_OPEN_BEGIN",
+                    file_path=lease.path, cache_key=key,
+                    extra={"wait_seconds": wait_seconds},
+                )
                 ds = xr.open_dataset(lease.path, engine="netcdf4")
-            except asyncio.CancelledError:
+                emit_native_event(
+                    "NATIVE_OPEN_DONE",
+                    file_path=lease.path, cache_key=key,
+                    extra={"open_seconds": time.perf_counter() - t_open_start},
+                )
+            except asyncio.CancelledError as exc:
+                emit_native_event(
+                    "NATIVE_OPEN_ERROR",
+                    file_path=lease.path, cache_key=key,
+                    extra={
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc) or "cancelled_during_open",
+                        "open_seconds": time.perf_counter() - t_open_start,
+                    },
+                )
                 open_seconds = time.perf_counter() - t_open_start
                 remaining = _open_counter.exit(key)
                 logger.info(
                     "OPEN_DATASET key=%s wait_seconds=%.4f open_seconds=%.4f "
-                    "status=cancelled_during_open concurrent_readers=%d",
-                    log_key, wait_seconds, open_seconds, remaining,
+                    "status=cancelled_during_open concurrent_readers=%d request_id=%s",
+                    log_key, wait_seconds, open_seconds, remaining, get_request_id(),
                 )
                 raise
-            except BaseException:
+            except BaseException as exc:
+                emit_native_event(
+                    "NATIVE_OPEN_ERROR",
+                    file_path=lease.path, cache_key=key,
+                    extra={
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                        "open_seconds": time.perf_counter() - t_open_start,
+                    },
+                )
                 open_seconds = time.perf_counter() - t_open_start
                 remaining = _open_counter.exit(key)
-                logger.warning(
+                with _live_handle_lock:
+                    per_key_live_handles = len(_live_handles_by_key.get(key, set()))
+                    global_live_handles = _global_live_handle_count
+                same_key_live_handle_exists = bool(_live_handles_by_key.get(key))
+                safe_log(
+                    logging.WARNING,
                     "OPEN_DATASET key=%s wait_seconds=%.4f open_seconds=%.4f "
-                    "status=open_failed concurrent_readers=%d",
-                    log_key, wait_seconds, open_seconds, remaining,
+                    "status=open_failed concurrent_readers=%d request_id=%s "
+                    "per_key_live_handles=%d global_live_handles=%d "
+                    "file_cache_maxsize=%d runtime_library_versions=%s "
+                    "same_key_live_handle_exists=%s",
+                    log_key, wait_seconds, open_seconds, remaining, get_request_id(),
+                    per_key_live_handles, global_live_handles,
+                    file_cache_maxsize(), runtime_library_versions(),
+                    same_key_live_handle_exists,
                 )
                 raise
             open_seconds = time.perf_counter() - t_open_start
             remaining = _open_counter.exit(key)
-            logger.info(
+            with _live_handle_lock:
+                per_key_live_handles = len(_live_handles_by_key.get(key, set()))
+                global_live_handles = _global_live_handle_count
+            safe_log(
+                logging.INFO,
                 "OPEN_DATASET key=%s wait_seconds=%.4f open_seconds=%.4f "
-                "status=ok concurrent_readers=%d",
-                log_key, wait_seconds, open_seconds, remaining,
+                "status=ok concurrent_readers=%d request_id=%s "
+                "per_key_live_handles=%d global_live_handles=%d "
+                "file_cache_maxsize=%d runtime_library_versions=%s",
+                log_key, wait_seconds, open_seconds, remaining, get_request_id(),
+                per_key_live_handles, global_live_handles,
+                file_cache_maxsize(), runtime_library_versions(),
             )
             return ds
         finally:

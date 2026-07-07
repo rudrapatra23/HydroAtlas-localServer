@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useMemo } from "react";
 import {
   useAppStore,
   Variable,
-  monthStringToYearMonth,
 } from "../../stores/useAppStore";
 import { motion } from "framer-motion";
-import { getDistrictRangeStatistics } from "../../api/boundaries";
+import { useDistrictData } from "../../hooks/useDistrictData";
+import { deriveKpis } from "../../stores/districtDataStore";
 
 interface KpiConfig {
   icon: string;
@@ -19,6 +19,18 @@ const KPI_CONFIGS: KpiConfig[] = [
   { icon: "rainy", label: "Precipitation", variable: "precipitation", unit: "m", color: "#2563EB" },
   { icon: "water_drop", label: "Soil Moisture", variable: "soil_moisture", unit: "m³/m³", color: "#16A34A" },
   { icon: "waves", label: "Surface Runoff", variable: "surface_runoff", unit: "m", color: "#EA580C" },
+];
+
+/**
+ * Canonical variable set the right-panel always shows. Listed explicitly
+ * (instead of being derived from layer toggles) because the right panel
+ * is the user's single source of truth for "what climate variables exist
+ * here" regardless of which chart tabs are visible below.
+ */
+const PANEL_VARIABLES: readonly Variable[] = [
+  "precipitation",
+  "soil_moisture",
+  "surface_runoff",
 ];
 
 function IconContainer({
@@ -102,6 +114,19 @@ function RefreshingBadge({ label = "Updating…" }: { label?: string }) {
   );
 }
 
+function monthStringToYearMonth(
+  monthString: string,
+): { year: number; month: number } | null {
+  if (!monthString) return null;
+  const match = /^(\d{4})-(\d{2})$/.exec(monthString);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return null;
+  if (month < 1 || month > 12) return null;
+  return { year, month };
+}
+
 function SelectedLocation() {
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
@@ -111,165 +136,42 @@ function SelectedLocation() {
   const setRightSidebarOpen = useAppStore((state) => state.setRightSidebarOpen);
   const startMonth = useAppStore((state) => state.startMonth);
   const endMonth = useAppStore((state) => state.endMonth);
-  const [stats, setStats] = useState<Record<Variable, { mean: number; min: number; max: number }> | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [noDatasetForPeriod, setNoDatasetForPeriod] = useState(false);
-  const [monthsProcessed, setMonthsProcessed] = useState(0);
-  // Tracks whether at least one fetch for the current selection has
-  // ever settled. Used to distinguish "no data yet attempted" from a
-  // genuine empty / 404 result, so we never render a misleading
-  // "No data available" message before the first request resolves.
-  const [hasAttempted, setHasAttempted] = useState(false);
 
-  // Monotonically-increasing request id. Every effect run captures the
-  // current value at the top and bumps the ref; every async continuation
-  // compares its captured id against the ref's current value. A mismatch
-  // means a newer effect run has started (district changed, state
-  // changed, range changed) and the captured run is stale. This replaces
-  // the previous `let cancelled = false` pattern with one that also
-  // survives the early-return paths (H1.c) and the D1->D2->D3 case
-  // where a stale response must not commit or affect loading.
-  const requestIdRef = useRef(0);
+  // Canonical demand-driven data fetch. The hook subscribes to the
+  // shared store and ensures exactly one fetch per (district, range,
+  // variable-set) key. Both this panel and the BottomPanel consume
+  // from the same store entry — no duplicate raster work.
+  const data = useDistrictData({
+    districtId: selectedDistrictId,
+    startMonth: startMonth || null,
+    endMonth: endMonth || null,
+    variables: PANEL_VARIABLES,
+  });
+
+  // Derive KPIs from the canonical time-series response. Equivalence
+  // with the previous /districts/{id}/statistics pipeline is proven
+  // analytically in `districtDataStore.ts` (mean-of-monthly-means
+  // equals min-of-monthly-mins equals max-of-monthly-maxes given the
+  // existing _compute_stats_for_geometry semantics).
+  const kpisByVariable = useMemo(() => {
+    const result: Partial<Record<Variable, { mean: number; min: number; max: number }>> = {};
+    for (const v of PANEL_VARIABLES) {
+      const kpis = deriveKpis(data.seriesByVariable[v]);
+      if (kpis) {
+        result[v] = { mean: kpis.mean, min: kpis.min, max: kpis.max };
+      }
+    }
+    return result;
+  }, [data.seriesByVariable]);
 
   const selectedState = states.find((s) => s.id === selectedStateId);
   const selectedDistrict = districts.find((d) => d.id === selectedDistrictId);
 
-  // Every change to the selected Start Month or End Month — or to the
-  // selected district — must immediately re-run the analysis request.
-  //
-  // Correctness contract (see H1.c + D1->D2->D3 in
-  // .kimchi/docs/race-diagnosis.md):
-  //   1. Every effect run gets a fresh requestId by bumping requestIdRef.
-  //   2. Every early-return path resets ALL display state — stats,
-  //      loading, noDatasetForPeriod, monthsProcessed, hasAttempted —
-  //      so a deselect / empty range / inverted range cannot leave the
-  //      panel stuck.
-  //   3. Every async continuation checks `isCurrent()` BEFORE mutating
-  //      any state, so a stale response can never overwrite a fresher
-  //      one or incorrectly clear loading.
-  //   4. The AbortController is best-effort: it cancels the network
-  //      request as soon as a new effect run starts. `isCurrent()` is
-  //      the correctness backstop for the case where the abort arrives
-  //      after the response body has already been parsed.
-  useEffect(() => {
-    const requestId = ++requestIdRef.current;
-    const isCurrent = () => requestIdRef.current === requestId;
-
-    if (!selectedDistrictId) {
-      setStats(null);
-      setNoDatasetForPeriod(false);
-      setMonthsProcessed(0);
-      setLoading(false);
-      setHasAttempted(false);
-      return;
-    }
-
-    const districtId = selectedDistrictId;
-    const start = monthStringToYearMonth(startMonth);
-    const end = monthStringToYearMonth(endMonth);
-    if (!start || !end) {
-      setStats(null);
-      setNoDatasetForPeriod(false);
-      setMonthsProcessed(0);
-      setLoading(false);
-      setHasAttempted(false);
-      return;
-    }
-    if (start.year * 12 + start.month > end.year * 12 + end.month) {
-      setStats(null);
-      setNoDatasetForPeriod(false);
-      setMonthsProcessed(0);
-      setLoading(false);
-      setHasAttempted(false);
-      return;
-    }
-
-    setLoading(true);
-    setNoDatasetForPeriod(false);
-    setHasAttempted(false);
-
-    const ac = new AbortController();
-
-    async function fetchAllStats() {
-      try {
-        const [precipStats, soilStats, runoffStats] = await Promise.all([
-          getDistrictRangeStatistics(
-            districtId,
-            {
-              start_year: start!.year,
-              start_month: start!.month,
-              end_year: end!.year,
-              end_month: end!.month,
-              variable: "precipitation",
-            },
-            ac.signal,
-          ),
-          getDistrictRangeStatistics(
-            districtId,
-            {
-              start_year: start!.year,
-              start_month: start!.month,
-              end_year: end!.year,
-              end_month: end!.month,
-              variable: "soil_moisture",
-            },
-            ac.signal,
-          ),
-          getDistrictRangeStatistics(
-            districtId,
-            {
-              start_year: start!.year,
-              start_month: start!.month,
-              end_year: end!.year,
-              end_month: end!.month,
-              variable: "surface_runoff",
-            },
-            ac.signal,
-          ),
-        ]);
-        if (!isCurrent()) return;
-        // Belt-and-braces: even if this run is still current, the user
-        // may have navigated to a different district in the time it took
-        // for the POSTs to settle. Defend against late commits.
-        if (useAppStore.getState().selectedDistrictId !== districtId) return;
-        setStats({
-          precipitation: { mean: precipStats.mean, min: precipStats.min, max: precipStats.max },
-          soil_moisture: { mean: soilStats.mean, min: soilStats.min, max: soilStats.max },
-          surface_runoff: { mean: runoffStats.mean, min: runoffStats.min, max: runoffStats.max },
-        });
-        setMonthsProcessed(precipStats.months_processed);
-        setHasAttempted(true);
-      } catch (error) {
-        if (!isCurrent()) return;
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        if (useAppStore.getState().selectedDistrictId !== districtId) return;
-        const message = error instanceof Error ? error.message : String(error);
-        if (/404/.test(message)) {
-          setStats(null);
-          setMonthsProcessed(0);
-          setNoDatasetForPeriod(true);
-        } else {
-          console.error("Failed to fetch statistics:", error);
-          setStats(null);
-          setMonthsProcessed(0);
-        }
-        setHasAttempted(true);
-      } finally {
-        if (isCurrent()) setLoading(false);
-      }
-    }
-
-    fetchAllStats();
-
-    return () => {
-      // Bump the requestId so any awaited response from this run is
-      // immediately classified as stale, even before the new run's body
-      // executes. Combined with the increment at the top of the next
-      // run this is equivalent to (and faster than) ac.abort().
-      ++requestIdRef.current;
-      ac.abort();
-    };
-  }, [selectedDistrictId, startMonth, endMonth]);
+  // "Has attempted" reflects whether the canonical entry has reached a
+  // terminal state for the current key. We use the presence of either
+  // a ready entry or an error/noData entry as the signal.
+  const hasAttempted = data.ready || data.noData || data.error !== null;
+  const showInitialSpinner = !hasAttempted && data.loading;
 
   const periodLabel = (() => {
     const start = monthStringToYearMonth(startMonth);
@@ -305,6 +207,11 @@ function SelectedLocation() {
   if (!selectedStateId || !selectedDistrictId) {
     return null;
   }
+
+  // Show KPI cards whenever we have any per-variable KPI derived from
+  // the canonical store entry. This keeps the panel useful while a
+  // background refresh is running (the previous values stay visible).
+  const hasAnyKpi = PANEL_VARIABLES.some((v) => kpisByVariable[v] !== undefined);
 
   return (
     <motion.div
@@ -344,29 +251,48 @@ function SelectedLocation() {
         </div>
       </div>
 
-      {stats && !noDatasetForPeriod ? (
+      {hasAnyKpi && !data.noData ? (
         <div className="relative">
           <div className="grid grid-cols-1 gap-2 mb-3">
-            {KPI_CONFIGS.map((kpi) => (
-              <KpiCard
-                key={kpi.variable}
-                icon={kpi.icon}
-                label={kpi.label}
-                value={stats[kpi.variable].mean}
-                unit={kpi.unit}
-                color={kpi.color}
-              />
-            ))}
+            {KPI_CONFIGS.map((kpi) => {
+              const k = kpisByVariable[kpi.variable];
+              // Render the card only when this variable's KPI is
+              // available in the canonical store. Otherwise leave a
+              // placeholder so the layout doesn't pop in/out.
+              if (!k) {
+                return (
+                  <div
+                    key={kpi.variable}
+                    className="rounded-md border border-slate-200 bg-slate-50 p-3 h-[5.25rem]"
+                    aria-hidden="true"
+                  />
+                );
+              }
+              return (
+                <KpiCard
+                  key={kpi.variable}
+                  icon={kpi.icon}
+                  label={kpi.label}
+                  value={k.mean}
+                  unit={kpi.unit}
+                  color={kpi.color}
+                />
+              );
+            })}
           </div>
-          {loading && <RefreshingBadge label="Processing new selection…" />}
+          {data.loading && <RefreshingBadge label="Processing new selection…" />}
         </div>
-      ) : loading || !hasAttempted ? (
+      ) : showInitialSpinner ? (
         <div className="flex items-center justify-center py-8">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-slate-700" />
         </div>
-      ) : noDatasetForPeriod ? (
+      ) : data.noData ? (
         <div className="flex items-center justify-center py-8 text-sm text-slate-500">
           No climate data available for the selected period.
+        </div>
+      ) : data.error ? (
+        <div className="flex items-center justify-center py-8 text-sm text-slate-500">
+          {data.error}
         </div>
       ) : (
         <div className="flex items-center justify-center py-8 text-sm text-slate-500">
@@ -381,7 +307,7 @@ function SelectedLocation() {
         </div>
         <span className="tabular-nums">
           {periodLabel}
-          {monthsProcessed > 0 ? ` · ${monthsProcessed}mo` : ""}
+          {data.monthsProcessed > 0 ? ` · ${data.monthsProcessed}mo` : ""}
         </span>
       </div>
     </motion.div>

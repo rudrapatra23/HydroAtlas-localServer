@@ -12,6 +12,7 @@ import numpy as np
 import rioxarray
 import xarray as xr
 
+from application.diagnostics import flush, get_request_id, safe_log
 from application.dto.responses import MonthlySeriesPoint, StateDistrictStatisticsItem
 from application.raster_cache import OpenRasterHandle, RasterCache, RasterLease
 from domain.entities.climate_asset import ClimateAsset
@@ -139,11 +140,32 @@ class RasterComputation:
         data: xr.DataArray,
         geometry: gpd.GeoDataFrame,
     ) -> RasterClipResult:
+        req_id = get_request_id()
+        # Eager metadata conversion: use tuple(data.dims) for a
+        # DataArray (data.dims is a tuple of dim-name strings; dict(...)
+        # raises ValueError). Routed through safe_log so any future
+        # formatting failure cannot interrupt the clip+compute path.
+        safe_log(
+            logging.INFO,
+            "RIO_CLIP_BEGIN request_id=%s dims=%s shape=%s",
+            req_id, tuple(data.dims), tuple(data.shape),
+        )
+        flush()
         clipped = data.rio.clip(geometry.geometry.values, geometry.crs)
         bounds = clipped.rio.bounds()
+        logger.info(
+            "RIO_CLIP_DONE request_id=%s bounds=%s clipped_shape=%s",
+            req_id, bounds, tuple(clipped.shape),
+        )
+        flush()
 
         values = clipped.values
         total_pixels = values.size
+        logger.info(
+            "NUMPY_AGGREGATE_BEGIN request_id=%s total_pixels=%d",
+            req_id, total_pixels,
+        )
+        flush()
         valid_mask = ~np.isnan(values)
         valid_pixel_count = int(valid_mask.sum())
         valid_pixel_percentage = (valid_pixel_count / total_pixels * 100) if total_pixels > 0 else 0.0
@@ -152,6 +174,11 @@ class RasterComputation:
         mean_value = float(np.mean(valid_data)) if valid_pixel_count > 0 else 0.0
         min_value = float(np.min(valid_data)) if valid_pixel_count > 0 else 0.0
         max_value = float(np.max(valid_data)) if valid_pixel_count > 0 else 0.0
+        logger.info(
+            "NUMPY_AGGREGATE_DONE request_id=%s valid_pixels=%d mean=%.6f min=%.6f max=%.6f",
+            req_id, valid_pixel_count, mean_value, min_value, max_value,
+        )
+        flush()
 
         return RasterClipResult(
             pixel_count=int(total_pixels),
@@ -243,28 +270,65 @@ class RasterComputation:
         for asset in assets:
             handle: OpenRasterHandle | None = None
             try:
+                req_id = get_request_id()
+                logger.info(
+                    "ASSET_BEGIN request_id=%s asset=%s/%s/%04d-%02d",
+                    req_id, asset.provider, asset.variable, asset.year, asset.month,
+                )
+                flush()
                 # read_raster_from_s3 returns an OpenRasterHandle that
                 # owns the dataset + cache lease as a single unit; the
-                # finally block closes both atomically.
+                # finally block closes both atomically. The xr.open_dataset
+                # call happens inside raster_cache.open_dataset — its own
+                # OPEN_DATASET log line marks the boundary.
                 handle = await self.read_raster_from_s3(asset)
                 raster = handle.dataset
+                logger.info(
+                    "DATASET_READY request_id=%s key=%s vars=%s",
+                    req_id, handle.lease._key, list(raster.data_vars),
+                )
+                flush()
+                logger.info(
+                    "VARIABLE_SELECT_BEGIN request_id=%s variable=%s",
+                    req_id, variable,
+                )
+                flush()
                 data = self._select_raster_variable(raster, variable)
+                # Eager metadata conversion: use tuple(data.dims) for a
+                # DataArray (data.dims is a tuple of dim-name strings;
+                # dict(...) raises ValueError). Routed through safe_log
+                # so any future formatting failure cannot interrupt the
+                # clip+compute path.
+                safe_log(
+                    logging.INFO,
+                    "VARIABLE_SELECT_DONE request_id=%s nc_var=%s dims=%s shape=%s",
+                    req_id, data.name, tuple(data.dims), tuple(data.shape),
+                )
+                flush()
                 clip = self._compute_stats_for_geometry(data, geometry)
                 per_month_means.append(clip.mean)
                 per_month_mins.append(clip.minimum)
                 per_month_maxes.append(clip.maximum)
                 months_processed += 1
                 logger.info(
-                    "Aggregated month %04d-%02d for geometry: mean=%.6f min=%.6f max=%.6f",
-                    asset.year,
-                    asset.month,
-                    clip.mean,
-                    clip.minimum,
-                    clip.maximum,
+                    "ASSET_DONE request_id=%s asset=%s/%s/%04d-%02d "
+                    "mean=%.6f min=%.6f max=%.6f",
+                    req_id, asset.provider, asset.variable, asset.year, asset.month,
+                    clip.mean, clip.minimum, clip.maximum,
                 )
+                flush()
             finally:
                 if handle is not None:
+                    logger.info(
+                        "DATASET_CLOSE_BEGIN request_id=%s key=%s",
+                        get_request_id(), handle.lease._key,
+                    )
                     handle.close()
+                    logger.info(
+                        "DATASET_CLOSE_DONE request_id=%s key=%s",
+                        get_request_id(), handle.lease._key,
+                    )
+                    flush()
 
         if months_processed == 0:
             raise ValueError(

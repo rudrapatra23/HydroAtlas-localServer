@@ -1,12 +1,15 @@
 /**
- * Regression test for H1.a (see .kimchi/docs/race-diagnosis.md).
+ * Regression tests for H1.a (map-instance lifetime) and the
+ * demand-driven district architecture.
  *
- * Before the fix, `selectedStateId` was in the map-init effect's
- * dependency array. Every state change tore down the MapLibre instance
- * via `map.remove()` and created a fresh one, producing blank-map
- * flicker and 1-3 s tile reloads. After the fix, the click handler
- * reads `selectedStateId` via a ref and the map-init effect runs
- * exactly once.
+ * After the refactor, state selection must:
+ *   - Create the MapLibre instance exactly once across many state
+ *     changes (H1.a — unchanged).
+ *   - Load district polygon boundaries (GeoJSON) only.
+ *   - NOT trigger any whole-state choropleth raster computation.
+ *     The backend `/states/{id}/districts/statistics` endpoint
+ *     remains available for explicit on-demand use but must not be
+ *     fetched automatically on state selection.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
@@ -37,13 +40,37 @@ vi.mock("maplibre-gl", () => {
   };
 });
 
+// Mock the boundaries API. getStateDistrictRangeStatistics is asserted
+// NEVER to be called from the map component after the refactor.
+vi.mock("../../api/boundaries", () => ({
+  getStates: vi.fn().mockResolvedValue([]),
+  getDatasets: vi.fn().mockResolvedValue([]),
+  getDistricts: vi.fn().mockResolvedValue([]),
+  getDistrictsGeojson: vi.fn().mockResolvedValue({
+    type: "FeatureCollection",
+    features: [],
+  }),
+  getStateDistrictRangeStatistics: vi.fn(),
+  getDistrictRangeStatistics: vi.fn(),
+  getDistrictMonthlySeries: vi.fn(),
+}));
+
 import HydraMap from "./HydraMap";
 import { Map as MapLibreMap } from "maplibre-gl";
+import {
+  getStateDistrictRangeStatistics,
+  getDistrictsGeojson,
+} from "../../api/boundaries";
+
+const mockedStateStats = getStateDistrictRangeStatistics as unknown as ReturnType<typeof vi.fn>;
+const mockedGeojson = getDistrictsGeojson as unknown as ReturnType<typeof vi.fn>;
 
 const MockMapCtor = MapLibreMap as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   MockMapCtor.mockClear();
+  mockedStateStats.mockClear();
+  mockedGeojson.mockClear();
   useAppStore.setState({
     selectedStateId: null,
     selectedDistrictId: null,
@@ -99,5 +126,53 @@ describe("HydraMap — H1.a map teardown fix", () => {
       useAppStore.getState().setEndMonth("2025-08");
     });
     expect(MockMapCtor).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("HydraMap — demand-driven state selection", () => {
+  it("does NOT call getStateDistrictRangeStatistics on state selection", async () => {
+    render(<HydraMap />);
+
+    await act(async () => {
+      useAppStore.getState().setSelectedStateId("IND.1.1_1");
+    });
+    // Allow any microtasks scheduled by the effect to run.
+    await act(async () => {});
+    expect(mockedStateStats).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call getStateDistrictRangeStatistics across many state changes, variable changes, or month-range changes", async () => {
+    render(<HydraMap />);
+
+    const stateIds = ["IND.1.1_1", "IND.2.1_1", "IND.3.1_1", "IND.4.1_1"];
+    for (const id of stateIds) {
+      await act(async () => {
+        useAppStore.getState().setSelectedStateId(id);
+      });
+      await act(async () => {
+        useAppStore.getState().setSelectedVariable(
+          ["precipitation", "soil_moisture", "surface_runoff"][
+            Math.floor(Math.random() * 3)
+          ],
+        );
+      });
+      await act(async () => {
+        useAppStore.getState().setStartMonth("2025-06");
+        useAppStore.getState().setEndMonth("2025-08");
+      });
+    }
+    await act(async () => {});
+    expect(mockedStateStats).not.toHaveBeenCalled();
+  });
+
+  it("DOES load district polygon boundaries (GeoJSON) on state selection", async () => {
+    render(<HydraMap />);
+
+    await act(async () => {
+      useAppStore.getState().setSelectedStateId("IND.1.1_1");
+    });
+    await act(async () => {});
+
+    expect(mockedGeojson).toHaveBeenCalledWith("IND.1.1_1");
   });
 });

@@ -12,12 +12,10 @@ import {
 } from "chart.js";
 import { Line } from "react-chartjs-2";
 import { motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  DistrictMonthlySeries,
-  MonthlySeriesPoint,
-  getDistrictMonthlySeries,
-} from "../../api/boundaries";
+import { useMemo } from "react";
+import { MonthlySeriesPoint } from "../../api/boundaries";
+import { useDistrictData } from "../../hooks/useDistrictData";
+import type { Variable as CanonicalVariable } from "../../stores/districtDataStore";
 
 ChartJS.register(
   CategoryScale,
@@ -38,7 +36,7 @@ const TABS: { id: BottomTab; label: string; icon: string }[] = [
 ];
 
 interface VariableConfig {
-  variable: Variable;
+  variable: CanonicalVariable;
   layerKey: LayerKey;
   label: string;
   color: string;
@@ -53,18 +51,29 @@ const VARIABLE_CONFIGS: VariableConfig[] = [
 ];
 
 /**
- * Variable ↔ LayerKey mapping used to filter API requests and chart
- * datasets by which layer toggles are enabled in Data Explorer. Lives
- * at module scope so the dependency array of BottomPanel's fetch
- * effect can reference the same set of keys.
+ * Canonical variable set requested by both the right-side
+ * `SelectedLocation` panel and this bottom panel. The chart tabs are
+ * filtered to the user-enabled subset at render time; the fetch set is
+ * always all three so the canonical key is shared.
  */
-const VARIABLE_TO_LAYER: Record<Variable, LayerKey> = {
+const CANONICAL_VARIABLES: readonly CanonicalVariable[] = [
+  "precipitation",
+  "soil_moisture",
+  "surface_runoff",
+];
+
+/**
+ * Variable ↔ LayerKey mapping used to filter chart datasets by which
+ * layer toggles are enabled in Data Explorer. Lives at module scope so
+ * the dependency array of the memoised enabled-list stays stable.
+ */
+const VARIABLE_TO_LAYER: Record<CanonicalVariable, LayerKey> = {
   precipitation: "rainfall",
   soil_moisture: "soil-moisture",
   surface_runoff: "runoff",
 };
 
-type SeriesByVariable = Record<Variable, MonthlySeriesPoint[]>;
+type SeriesByVariable = Record<CanonicalVariable, MonthlySeriesPoint[]>;
 
 const EMPTY_SERIES: SeriesByVariable = {
   precipitation: [],
@@ -96,7 +105,76 @@ function linearRegression(points: MonthlySeriesPoint[]): { slope: number; interc
   return { slope, intercept };
 }
 
-function buildChartOptions() {
+function buildChartOptions(visibleConfigs?: VariableConfig[]) {
+  // When `visibleConfigs` is supplied the chart uses two independent
+  // y-axes so Soil Moisture (~0.1–0.25 m³/m³) does not flatten
+  // Rainfall/Runoff (~0.0001–0.002 m) to a near-zero line. The trend
+  // tab calls this with no argument because it only ever plots Rainfall.
+  const useDualAxis = Array.isArray(visibleConfigs);
+  const hasSoil = useDualAxis
+    ? !!visibleConfigs!.some((c) => c.variable === "soil_moisture")
+    : false;
+  const hasWater = useDualAxis
+    ? !!visibleConfigs!.some(
+        (c) => c.variable === "precipitation" || c.variable === "surface_runoff",
+      )
+    : true;
+
+  const scales: Record<string, any> = {
+    x: {
+      grid: { display: false },
+      ticks: {
+        maxTicksLimit: 8,
+        font: { family: "Inter, sans-serif" },
+      },
+    },
+  };
+
+  if (useDualAxis) {
+    scales["y-soil"] = {
+      type: "linear",
+      position: "left",
+      display: hasSoil,
+      title: {
+        display: hasSoil,
+        text: "Soil Moisture (m³/m³)",
+        font: { family: "Inter, sans-serif", size: 11 },
+        color: "#475569",
+      },
+      min: 0,
+      max: 0.4,
+      grid: { color: "rgba(15, 23, 42, 0.06)" },
+      ticks: {
+        font: { family: "Inter, sans-serif" },
+      },
+    };
+    scales["y-water"] = {
+      type: "linear",
+      position: "right",
+      display: hasWater,
+      title: {
+        display: hasWater,
+        text: "Rainfall / Runoff (m)",
+        font: { family: "Inter, sans-serif", size: 11 },
+        color: "#475569",
+      },
+      // Auto-fit to the Rainfall + Runoff range so a layer-toggle
+      // combination of only Rainfall, only Runoff, or both still
+      // produces a sensible scale.
+      grid: { drawOnChartArea: false },
+      ticks: {
+        font: { family: "Inter, sans-serif" },
+      },
+    };
+  } else {
+    scales["y"] = {
+      grid: { color: "rgba(15, 23, 42, 0.06)" },
+      ticks: {
+        font: { family: "Inter, sans-serif" },
+      },
+    };
+  }
+
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -104,21 +182,7 @@ function buildChartOptions() {
       intersect: false,
       mode: "index" as const,
     },
-    scales: {
-      x: {
-        grid: { display: false },
-        ticks: {
-          maxTicksLimit: 8,
-          font: { family: "Inter, sans-serif" },
-        },
-      },
-      y: {
-        grid: { color: "rgba(15, 23, 42, 0.06)" },
-        ticks: {
-          font: { family: "Inter, sans-serif" },
-        },
-      },
-    },
+    scales,
     plugins: {
       legend: {
         position: "top" as const,
@@ -165,12 +229,19 @@ function buildSeriesChart(
     labels,
     datasets: visibleConfigs.map((config) => {
       const points = series[config.variable];
+      // Soil Moisture uses the left axis (m³/m³, 0–0.3); Rainfall and
+      // Surface Runoff share the right axis (m, auto-fit). This stops
+      // Soil Moisture's larger magnitude from flattening the water-
+      // flux series into a near-zero line.
+      const yAxisID =
+        config.variable === "soil_moisture" ? "y-soil" : "y-water";
       return {
         label: `${config.label} (${config.unit})`,
         data: points.map((p) => p.mean),
         borderColor: config.color,
         backgroundColor: config.variable === "precipitation" ? `${config.color}1A` : "transparent",
         fill: config.variable === "precipitation",
+        yAxisID,
         tension: 0.35,
         borderWidth: 2,
         pointRadius: 0,
@@ -182,10 +253,6 @@ function buildSeriesChart(
 }
 
 function buildTrendChart(series: SeriesByVariable, rainfallEnabled: boolean) {
-  // The Trend tab is rainfall-only by design. If the rainfall layer is
-  // off we still emit a structurally valid chart with empty datasets so
-  // the caller can render a clear empty state instead of a chart that
-  // appears to show data when none is configured.
   if (!rainfallEnabled) {
     return {
       labels: [],
@@ -244,10 +311,10 @@ function computeSeriesStats(points: MonthlySeriesPoint[]) {
   };
 }
 
-function TimeSeriesTab({ chart }: { chart: any }) {
+function TimeSeriesTab({ chart, visibleConfigs }: { chart: any; visibleConfigs: VariableConfig[] }) {
   return (
     <div className="min-h-[16rem] mt-4">
-      <Line data={chart} options={buildChartOptions()} />
+      <Line data={chart} options={buildChartOptions(visibleConfigs)} />
     </div>
   );
 }
@@ -440,14 +507,6 @@ function ExportTab({
   );
 }
 
-/**
- * Small, non-blocking overlay rendered while a new query is in flight.
- * The previous committed chart / KPI data stays visible underneath so
- * the user never sees a destructive blank during district / month /
- * year / range / layer-toggle transitions. Truthful: only signals that
- * a refresh is in progress, never a fake percentage or fabricated
- * backend stage.
- */
 function RefreshingBadge({ label = "Updating…" }: { label?: string }) {
   return (
     <div
@@ -475,159 +534,37 @@ function BottomPanel() {
   const endMonth = useAppStore((state) => state.endMonth);
   const layers = useAppStore((state) => state.layers);
 
-  // Layer-toggle filtering: only enabled variables are fetched and
-  // rendered. If every layer is off we short-circuit to an empty state
-  // before issuing any API call.
-  //
-  // MEMOIZED: previously this was a plain ``.filter(...)`` call. React
-  // allocates a fresh array on every render, and because this array is
-  // in the useEffect dep list it caused the effect to re-fire on every
-  // render — which then issued another batch of network requests,
-  // which triggered another ``setSeries`` re-render, and so on
-  // indefinitely. ``useMemo`` with ``[layers]`` keeps the array
-  // identity stable until the user actually toggles a layer.
+  // The canonical hook subscribes to the shared district data store.
+  // Both this panel and the right-side `SelectedLocation` call the
+  // same hook with the same args — they share one canonical entry.
+  const data = useDistrictData({
+    districtId: selectedDistrictId,
+    startMonth: startMonth || null,
+    endMonth: endMonth || null,
+    variables: CANONICAL_VARIABLES,
+  });
+
+  // Layer-toggle filtering only affects which charts are VISIBLE. The
+  // canonical fetch always covers all three variables so the entry can
+  // be shared between both panels.
   const enabledVariables = useMemo(
     () => VARIABLE_CONFIGS.filter((config) => layers[config.layerKey].enabled),
     [layers]
   );
   const noLayerEnabled = enabledVariables.length === 0;
 
-  // Holds the AbortController for the in-flight batch of requests. The
-  // useEffect cleanup aborts it so a rapid re-fire cannot leak an
-  // unanswered request that keeps the network stack busy even after
-  // the user moves on.
-  const abortRef = useRef<AbortController | null>(null);
-
-  const [series, setSeries] = useState<SeriesByVariable>(EMPTY_SERIES);
-  const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [monthsProcessed, setMonthsProcessed] = useState(0);
-  // Tracks whether at least one fetch for the current selection has
-  // ever settled. Used to distinguish "no data yet attempted" from a
-  // genuine empty / error result so we never render a misleading
-  // "No climate data available" message before the first request
-  // resolves.
-  const [hasAttempted, setHasAttempted] = useState(false);
-
-  // Every change to Start Month, End Month, selected district, or layer
-  // toggles must immediately re-fetch the per-month series for the
-  // currently-enabled variables only.
-  useEffect(() => {
-    if (!selectedDistrictId) {
-      setSeries(EMPTY_SERIES);
-      setErrorMessage(null);
-      setMonthsProcessed(0);
-      setLoading(false);
-      return;
+  // Project the canonical store entry into the per-variable
+  // SeriesByVariable shape used by the chart builders.
+  const series: SeriesByVariable = useMemo(() => {
+    const next: SeriesByVariable = { ...EMPTY_SERIES };
+    for (const v of CANONICAL_VARIABLES) {
+      const r = data.seriesByVariable[v];
+      next[v] = r?.points ?? [];
     }
+    return next;
+  }, [data.seriesByVariable]);
 
-    if (!startMonth || !endMonth) {
-      setSeries(EMPTY_SERIES);
-      setErrorMessage(null);
-      return;
-    }
-
-    if (noLayerEnabled) {
-      // Short-circuit: no API calls when every layer is off.
-      setSeries(EMPTY_SERIES);
-      setErrorMessage(null);
-      setMonthsProcessed(0);
-      setLoading(false);
-      return;
-    }
-
-    const startKey = Number(startMonth.slice(0, 4)) * 12 + Number(startMonth.slice(5, 7));
-    const endKey = Number(endMonth.slice(0, 4)) * 12 + Number(endMonth.slice(5, 7));
-    if (startKey > endKey) {
-      setSeries(EMPTY_SERIES);
-      setErrorMessage("Start Month must be on or before End Month.");
-      setMonthsProcessed(0);
-      setLoading(false);
-      return;
-    }
-
-    const districtId = selectedDistrictId;
-    const [startYear, startMonthNum] = [
-      Number(startMonth.slice(0, 4)),
-      Number(startMonth.slice(5, 7)),
-    ];
-    const [endYear, endMonthNum] = [
-      Number(endMonth.slice(0, 4)),
-      Number(endMonth.slice(5, 7)),
-    ];
-    const range = { start_year: startYear, start_month: startMonthNum, end_year: endYear, end_month: endMonthNum };
-
-    let cancelled = false;
-    // Abort any in-flight batch from the previous effect run so a rapid
-    // re-fire cannot leave an unanswered request on the wire.
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    setLoading(true);
-    setErrorMessage(null);
-
-    async function fetchEnabledSeries() {
-      try {
-        const responses: [Variable, DistrictMonthlySeries][] = await Promise.all(
-          enabledVariables.map((config) =>
-            getDistrictMonthlySeries(
-              districtId,
-              { ...range, variable: config.variable },
-              ac.signal
-            )
-              .then((r) => [config.variable, r] as [Variable, DistrictMonthlySeries])
-          )
-        );
-        if (cancelled) return;
-        const next: SeriesByVariable = {
-          precipitation: [],
-          soil_moisture: [],
-          surface_runoff: [],
-        };
-        let processed = 0;
-        for (const [variable, response] of responses) {
-          next[variable] = response.points;
-          if (response.months_processed > processed) {
-            processed = response.months_processed;
-          }
-        }
-        setSeries(next);
-        setMonthsProcessed(processed);
-        setHasAttempted(true);
-      } catch (error) {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message : String(error);
-        // AbortError is expected when the next effect run cancels this
-        // batch — not a real failure, just skip the user-visible error.
-        if (/AbortError/i.test(message)) return;
-        if (/404/.test(message)) {
-          setSeries(EMPTY_SERIES);
-          setMonthsProcessed(0);
-          setErrorMessage("No climate data available for the selected period.");
-        } else {
-          console.error("Failed to fetch monthly series:", error);
-          setSeries(EMPTY_SERIES);
-          setMonthsProcessed(0);
-          setErrorMessage("Failed to load data. Please try a different period.");
-        }
-        setHasAttempted(true);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    fetchEnabledSeries();
-
-    return () => {
-      cancelled = true;
-      ac.abort();
-    };
-    // ``enabledVariables`` is derived from ``layers`` so adding it to the
-    // dependency list is sufficient — toggling any layer triggers a
-    // re-fetch with the new enabled set.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDistrictId, startMonth, endMonth, enabledVariables]);
+  const monthsProcessed = data.monthsProcessed;
 
   const seriesChart = useMemo(
     () => buildSeriesChart(series, monthsProcessed, enabledVariables),
@@ -643,6 +580,8 @@ function BottomPanel() {
     return startMonth === endMonth ? startMonth : `${startMonth} → ${endMonth}`;
   }, [startMonth, endMonth]);
 
+  const hasAnyPoints = Object.values(series).some((arr) => arr.length > 0);
+
   if (!bottomPanelOpen) {
     return (
       <button
@@ -657,6 +596,14 @@ function BottomPanel() {
       </button>
     );
   }
+
+  // Distinguish "we have at least one data point to render" from
+  // "nothing usable came back". This avoids rendering a misleading
+  // empty-state message before the first request resolves.
+  const ready = data.ready || hasAnyPoints;
+  const showInitialSpinner = !ready && data.loading;
+  const showError = !ready && !data.loading && data.error !== null;
+  const showNoData = !ready && !data.loading && data.noData;
 
   return (
     <motion.div
@@ -697,10 +644,10 @@ function BottomPanel() {
 
       {selectedStateId && selectedDistrictId ? (
         <div>
-          {monthsProcessed > 0 ? (
+          {hasAnyPoints ? (
             <div className="relative">
               {bottomActiveTab === "time-series" && (
-                <TimeSeriesTab chart={seriesChart} />
+                <TimeSeriesTab chart={seriesChart} visibleConfigs={enabledVariables} />
               )}
               {bottomActiveTab === "trend" && (
                 layers.rainfall.enabled ? (
@@ -728,20 +675,26 @@ function BottomPanel() {
                   disabled={false}
                 />
               )}
-              {loading && <RefreshingBadge label="Processing new selection…" />}
+              {data.loading && <RefreshingBadge label="Processing new selection…" />}
             </div>
-          ) : loading || !hasAttempted ? (
+          ) : showInitialSpinner ? (
             <div className="flex items-center justify-center py-10">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-slate-700" />
             </div>
-          ) : errorMessage ? (
+          ) : showError ? (
             <div className="flex items-center justify-center py-10">
-              <p className="text-sm text-slate-500">{errorMessage}</p>
+              <p className="text-sm text-slate-500">{data.error}</p>
             </div>
           ) : noLayerEnabled ? (
             <div className="flex items-center justify-center py-10">
               <p className="text-sm text-slate-500">
                 Enable at least one layer in Data Explorer to view data.
+              </p>
+            </div>
+          ) : showNoData ? (
+            <div className="flex items-center justify-center py-10">
+              <p className="text-sm text-slate-500">
+                No climate data available for the selected period.
               </p>
             </div>
           ) : (
