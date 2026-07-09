@@ -48,7 +48,7 @@ const lightBasemapStyle: StyleSpecification = {
 };
 
 const VARIABLE_COLOR_STOPS = {
-  precipitation: ["#EFF6FF", "#93C5FD", "#2563EB", "#1E3A8A"],
+  precipitation: ["#DBEAFE", "#7DD3FC", "#0EA5E9", "#075985"],
   soil_moisture: ["#F0FDF4", "#86EFAC", "#16A34A", "#14532D"],
   surface_runoff: ["#FFF7ED", "#FDBA74", "#EA580C", "#9A3412"],
 } as const;
@@ -161,7 +161,7 @@ function HydraMap() {
     mapInstance.setPaintProperty(
       DISTRICT_RASTER_FILL_LAYER_ID,
       "fill-opacity",
-      ["case", ["has", "display_value"], 0.82, 0],
+      ["case", ["has", "display_value"], 0.42, 0],
     );
   }
 
