@@ -6,13 +6,18 @@ import os
 import threading
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from api.dependencies import get_repository, get_storage
+from api.dependencies import get_district_clipper, get_repository, get_storage
 from application.diagnostics import flush, request_context
 from application.dto.requests import StatisticsRequest
-from application.dto.responses import DistrictMonthlySeriesResponse, StatisticsResponse
+from application.dto.responses import (
+    DistrictMonthlySeriesResponse,
+    DistrictRasterClipResponse,
+    StatisticsResponse,
+)
 from application.raster_computation import RasterComputation
+from district_clip import DistrictNotFoundError, Era5DistrictClipper
 from domain.ports.dataset_repository import DatasetRepository
 from domain.ports.storage_port import StoragePort
 
@@ -271,6 +276,176 @@ async def get_district_time_series(
         except Exception:
             logger.exception(
                 "REQUEST_ERROR endpoint=district_time_series request_id=%s "
+                "error=unhandled pid=%d thread_id=%d task_id=%s",
+                req_id, os.getpid(), threading.get_ident(), id(asyncio.current_task()),
+            )
+            flush()
+            raise
+
+
+@router.get(
+    "/{district_id}/raster-clip",
+    response_model=DistrictRasterClipResponse,
+    name="district_raster_clip",
+)
+async def get_district_raster_clip(
+    district_id: str,
+    clipper: Annotated[Era5DistrictClipper, Depends(get_district_clipper)],
+    year: Annotated[int, Query(ge=1900, le=2100, description="ERA5 year (YYYY).")],
+    month: Annotated[int, Query(ge=1, le=12, description="ERA5 month (1-12).")],
+    variable: Annotated[
+        str,
+        Query(
+            description=(
+                "HydroAtlas public variable name. One of "
+                "'precipitation', 'soil_moisture', 'surface_runoff'."
+            ),
+        ),
+    ] = "precipitation",
+    padding_deg: Annotated[
+        float,
+        Query(
+            ge=0.0,
+            le=2.0,
+            description=(
+                "Bbox padding in degrees added to the district polygon "
+                "before the Stage-2 NetCDF read (Stage 1 I/O buffer)."
+            ),
+        ),
+    ] = 0.1,
+    provider: Annotated[
+        str,
+        Query(description="Climate data provider key."),
+    ] = "era5-land",
+) -> DistrictRasterClipResponse:
+    """Return the per-cell ERA5 raster clipped to a GADM district boundary.
+
+    The endpoint resolves the exact GADM geometry via the production
+    boundary loader, fetches the (provider, variable, year, month)
+    NetCDF through the existing S3-backed ``RasterCache``, performs
+    the validated two-stage clip (bbox pre-filter + exact geometric
+    clip in an LAEA equal-area projection), and returns the resulting
+    clipped cells as a GeoJSON ``FeatureCollection`` plus summary
+    statistics and operator-facing diagnostics.
+
+    Boundary cells preserve the original ERA5 cell value; only the
+    geometry is clipped at the district border. Cells entirely outside
+    the district are excluded from the response.
+    """
+    with request_context() as req_id:
+        logger.info(
+            "REQUEST_BEGIN endpoint=district_raster_clip request_id=%s "
+            "district_id=%s variable=%s year=%04d month=%02d padding_deg=%.3f "
+            "provider=%s pid=%d thread_id=%d task_id=%s",
+            req_id, district_id, variable, year, month, padding_deg, provider,
+            os.getpid(), threading.get_ident(), id(asyncio.current_task()),
+        )
+        flush()
+        try:
+            try:
+                result = await clipper.clip(
+                    district_id=district_id,
+                    year=year,
+                    month=month,
+                    variable=variable,
+                    padding_deg=padding_deg,
+                    provider=provider,
+                )
+            except DistrictNotFoundError as exc:
+                logger.info(
+                    "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
+                    "error=district_not_found pid=%d thread_id=%d",
+                    req_id, os.getpid(), threading.get_ident(),
+                )
+                flush()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=str(exc),
+                )
+            except KeyError as exc:
+                # Unknown HydroAtlas variable name.
+                logger.info(
+                    "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
+                    "error=unknown_variable detail=%s pid=%d thread_id=%d",
+                    req_id, exc, os.getpid(), threading.get_ident(),
+                )
+                flush()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                )
+            except ValueError as exc:
+                message = str(exc)
+                # Asset-missing vs. bbox-misses-raster are both 404 from
+                # the user's perspective; the message is enough to tell
+                # them which one happened.
+                logger.info(
+                    "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
+                    "error=value_error detail=%s pid=%d thread_id=%d",
+                    req_id, message, os.getpid(), threading.get_ident(),
+                )
+                flush()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=message,
+                )
+            except FileNotFoundError as exc:
+                logger.error(
+                    "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
+                    "error=netcdf_missing detail=%s pid=%d thread_id=%d",
+                    req_id, exc, os.getpid(), threading.get_ident(),
+                )
+                flush()
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "NetCDF file is not available on disk and the S3 "
+                        "download failed. Check the storage adapter and "
+                        "the climate_assets row for this period."
+                    ),
+                )
+
+            # Enforce the max_features safety cap so a runaway request
+            # cannot OOM the process; we never silently truncate.
+            n_features = len(result.feature_collection.get("features", []))
+            if n_features > clipper.max_features:
+                logger.warning(
+                    "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
+                    "error=too_many_features features=%d max=%d",
+                    req_id, n_features, clipper.max_features,
+                )
+                flush()
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"District yields {n_features} clipped cells, which "
+                        f"exceeds the configured maximum of "
+                        f"{clipper.max_features}. Re-run with a smaller "
+                        "bbox padding or split the district."
+                    ),
+                )
+
+            logger.info(
+                "REQUEST_END endpoint=district_raster_clip request_id=%s "
+                "district_id=%s variable=%s year=%04d month=%02d "
+                "valid_cells=%d boundary_cells=%d "
+                "asset=%s cache_hit=%s "
+                "request_duration=%.3fs pid=%d thread_id=%d task_id=%s",
+                req_id, district_id, variable, year, month,
+                result.summary.get("valid_cells", 0),
+                result.summary.get("boundary_cells", 0),
+                result.asset_storage_key,
+                result.cache_hit,
+                result.diagnostics.get("request_duration_seconds", 0.0),
+                os.getpid(), threading.get_ident(), id(asyncio.current_task()),
+            )
+            flush()
+            return DistrictRasterClipResponse.from_domain(result)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
                 "error=unhandled pid=%d thread_id=%d task_id=%s",
                 req_id, os.getpid(), threading.get_ident(), id(asyncio.current_task()),
             )

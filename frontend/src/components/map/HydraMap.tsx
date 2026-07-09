@@ -4,10 +4,21 @@ import maplibregl, {
   StyleSpecification,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { useAppStore } from "../../stores/useAppStore";
-import { getDistrictsGeojson } from "../../api/boundaries";
+import { monthStringToYearMonth, useAppStore } from "../../stores/useAppStore";
+import {
+  DistrictRasterClipResponse,
+  getDistrictRasterClip,
+  getDistrictsGeojson,
+} from "../../api/boundaries";
+import { getDisplayUnit, toDisplayValue } from "../../stores/districtDataStore";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const DISTRICT_SOURCE_ID = "districts";
+const DISTRICT_RASTER_SOURCE_ID = "district-raster";
+const DISTRICT_FILL_LAYER_ID = "districts-fill";
+const DISTRICT_SELECTED_FILL_LAYER_ID = "districts-selected-fill";
+const DISTRICT_SELECTED_LINE_LAYER_ID = "districts-selected-line";
+const DISTRICT_RASTER_FILL_LAYER_ID = "district-raster-fill";
+const DISTRICT_RASTER_LINE_LAYER_ID = "district-raster-line";
 
 const lightBasemapStyle: StyleSpecification = {
   version: 8,
@@ -36,34 +47,138 @@ const lightBasemapStyle: StyleSpecification = {
   ],
 };
 
+const VARIABLE_COLOR_STOPS = {
+  precipitation: ["#EFF6FF", "#93C5FD", "#2563EB", "#1E3A8A"],
+  soil_moisture: ["#F0FDF4", "#86EFAC", "#16A34A", "#14532D"],
+  surface_runoff: ["#FFF7ED", "#FDBA74", "#EA580C", "#9A3412"],
+} as const;
+
+function formatLegendValue(value: number): string {
+  if (!Number.isFinite(value)) return "n/a";
+  return value.toFixed(Math.abs(value) >= 100 ? 0 : 1);
+}
+
 function HydraMap() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
+  const selectedVariable = useAppStore((state) => state.selectedVariable);
+  const endMonth = useAppStore((state) => state.endMonth);
+  const rasterLayerEnabled = useAppStore((state) => {
+    if (state.selectedVariable === "precipitation") return state.layers.rainfall.enabled;
+    if (state.selectedVariable === "soil_moisture") return state.layers["soil-moisture"].enabled;
+    return state.layers.runoff.enabled;
+  });
   const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
   const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
   const districtGeojsonRef = useRef<any | null>(null);
+  const districtRasterRef = useRef<DistrictRasterClipResponse | null>(null);
   const geojsonLoadedForStateRef = useRef<string | null>(null);
-  // Mirrors selectedStateId so the map-init effect (which runs exactly
-  // once and is intentionally NOT torn down on state changes — see
-  // H1.a in .kimchi/docs/race-diagnosis.md) can read the current value
-  // inside its click handler without being re-subscribed.
   const selectedStateIdRef = useRef<string | null>(selectedStateId);
+
   useEffect(() => {
     selectedStateIdRef.current = selectedStateId;
   }, [selectedStateId]);
 
-  // Boundary-load in-flight indicator. State selection only loads the
-  // district polygon overlay; it does NOT trigger any climate raster
-  // computation. The "Updating…" badge reflects the GeoJSON fetch, not
-  // any choropleth computation.
-  const [mapLoading, setMapLoading] = useState(false);
+  const [boundaryLoading, setBoundaryLoading] = useState(false);
+  const [rasterLoading, setRasterLoading] = useState(false);
+  const [legendState, setLegendState] = useState<{
+    label: string;
+    min: number;
+    p25: number;
+    median: number;
+    p75: number;
+    max: number;
+  } | null>(null);
 
   const emptyFeatureCollection = useMemo(
     () => ({ type: "FeatureCollection", features: [] as any[] }),
-    []
+    [],
   );
+
+  const activeRasterMonth = useMemo(
+    () => monthStringToYearMonth(endMonth),
+    [endMonth],
+  );
+
+  const mapLoading = boundaryLoading || rasterLoading;
+
+  function setRasterData(
+    mapInstance: MapLibreMap,
+    response: DistrictRasterClipResponse | null,
+  ) {
+    const source = mapInstance.getSource(DISTRICT_RASTER_SOURCE_ID) as any;
+    if (!source) return;
+    if (!response) {
+      source.setData(emptyFeatureCollection as any);
+      return;
+    }
+    source.setData({
+      ...response.feature_collection,
+      features: response.feature_collection.features.map((feature) => ({
+        ...feature,
+        properties: {
+          ...feature.properties,
+          display_value: toDisplayValue(selectedVariable, feature.properties.value),
+        },
+      })),
+    } as any);
+  }
+
+  function setRasterPaint(
+    mapInstance: MapLibreMap,
+    response: DistrictRasterClipResponse | null,
+  ) {
+    if (!mapInstance.getLayer(DISTRICT_RASTER_FILL_LAYER_ID)) return;
+    if (!response || response.summary.valid_cells === 0) {
+      mapInstance.setPaintProperty(DISTRICT_RASTER_FILL_LAYER_ID, "fill-opacity", 0);
+      return;
+    }
+
+    const colors = VARIABLE_COLOR_STOPS[selectedVariable];
+    const min = toDisplayValue(selectedVariable, response.summary.min);
+    const p25 = toDisplayValue(selectedVariable, response.summary.p25);
+    const p75 = toDisplayValue(selectedVariable, response.summary.p75);
+    const max = toDisplayValue(selectedVariable, response.summary.max);
+    const fillColor =
+      max <= min
+        ? ["case", ["has", "display_value"], colors[2], "rgba(0,0,0,0)"]
+        : [
+            "interpolate",
+            ["linear"],
+            ["get", "display_value"],
+            min, colors[0],
+            p25, colors[1],
+            p75, colors[2],
+            max, colors[3],
+          ];
+    mapInstance.setPaintProperty(
+      DISTRICT_RASTER_FILL_LAYER_ID,
+      "fill-color",
+      fillColor as any,
+    );
+    mapInstance.setPaintProperty(
+      DISTRICT_RASTER_FILL_LAYER_ID,
+      "fill-opacity",
+      ["case", ["has", "display_value"], 0.82, 0],
+    );
+  }
+
+  function setRasterLegend(response: DistrictRasterClipResponse | null) {
+    if (!response || response.summary.valid_cells === 0) {
+      setLegendState(null);
+      return;
+    }
+    setLegendState({
+      label: `${response.variable_long_name} (${getDisplayUnit(selectedVariable)})`,
+      min: toDisplayValue(selectedVariable, response.summary.min),
+      p25: toDisplayValue(selectedVariable, response.summary.p25),
+      median: toDisplayValue(selectedVariable, response.summary.median),
+      p75: toDisplayValue(selectedVariable, response.summary.p75),
+      max: toDisplayValue(selectedVariable, response.summary.max),
+    });
+  }
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -91,19 +206,42 @@ function HydraMap() {
         {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
           duration: 0,
-        }
+        },
       );
 
-      map.addSource("districts", {
+      map.addSource(DISTRICT_SOURCE_ID, {
+        type: "geojson",
+        data: emptyFeatureCollection as any,
+      });
+      map.addSource(DISTRICT_RASTER_SOURCE_ID, {
         type: "geojson",
         data: emptyFeatureCollection as any,
       });
 
-      // Updated: Sequential Blues scale from White (0.0) to Dark Blue (1.0)
       map.addLayer({
-        id: "districts-fill",
+        id: DISTRICT_RASTER_FILL_LAYER_ID,
         type: "fill",
-        source: "districts",
+        source: DISTRICT_RASTER_SOURCE_ID,
+        paint: {
+          "fill-color": "rgba(0,0,0,0)",
+          "fill-opacity": 0,
+        },
+      });
+      map.addLayer({
+        id: DISTRICT_RASTER_LINE_LAYER_ID,
+        type: "line",
+        source: DISTRICT_RASTER_SOURCE_ID,
+        paint: {
+          "line-color": "#0F172A",
+          "line-width": 0.25,
+          "line-opacity": 0.18,
+        },
+      });
+
+      map.addLayer({
+        id: DISTRICT_FILL_LAYER_ID,
+        type: "fill",
+        source: DISTRICT_SOURCE_ID,
         paint: {
           "fill-color": [
             "case",
@@ -123,34 +261,30 @@ function HydraMap() {
           "fill-opacity": ["case", ["has", "norm"], 0.85, 0.05],
         },
       });
-
-      // Updated: Darker border color so white/light-blue districts stay visible
       map.addLayer({
         id: "districts-line",
         type: "line",
-        source: "districts",
+        source: DISTRICT_SOURCE_ID,
         paint: {
           "line-color": "#1E293B",
           "line-width": 0.5,
           "line-opacity": 0.25,
         },
       });
-
       map.addLayer({
-        id: "districts-selected-fill",
+        id: DISTRICT_SELECTED_FILL_LAYER_ID,
         type: "fill",
-        source: "districts",
+        source: DISTRICT_SOURCE_ID,
         filter: ["==", ["get", "district_id"], ""],
         paint: {
           "fill-color": "#FFFFFF",
           "fill-opacity": 0.1,
         },
       });
-
       map.addLayer({
-        id: "districts-selected-line",
+        id: DISTRICT_SELECTED_LINE_LAYER_ID,
         type: "line",
-        source: "districts",
+        source: DISTRICT_SOURCE_ID,
         filter: ["==", ["get", "district_id"], ""],
         paint: {
           "line-color": "#0F172A",
@@ -162,15 +296,12 @@ function HydraMap() {
 
     map.on("click", (event) => {
       const features = map.queryRenderedFeatures(event.point, {
-        layers: ["districts-fill"],
+        layers: [DISTRICT_FILL_LAYER_ID],
       });
       const feature = features[0];
       const districtId = feature?.properties?.district_id as string | undefined;
       const stateId = feature?.properties?.state_id as string | undefined;
       if (districtId && stateId) {
-        // Read the latest selectedStateId from the ref so this handler
-        // does not need the map-init effect to be re-subscribed on
-        // every state change.
         if (selectedStateIdRef.current !== stateId) {
           setSelectedStateId(stateId);
           queueMicrotask(() => setSelectedDistrictId(districtId));
@@ -184,11 +315,6 @@ function HydraMap() {
       map.remove();
       mapRef.current = null;
     };
-    // Intentionally NOT depending on selectedStateId: the map instance
-    // is a long-lived resource and must NOT be torn down on every
-    // state change. The click handler reads selectedStateId via
-    // selectedStateIdRef, which is kept in sync by the small effect
-    // above. See H1.a in .kimchi/docs/race-diagnosis.md.
   }, [emptyFeatureCollection, setSelectedDistrictId, setSelectedStateId]);
 
   useEffect(() => {
@@ -196,37 +322,25 @@ function HydraMap() {
     if (!map) return;
 
     let cancelled = false;
-
-    // State selection only loads the district polygon overlay.
-    // Climate raster statistics for the entire state are NOT computed
-    // automatically. The whole-state choropleth endpoint remains
-    // available in the backend for an explicit on-demand overview.
-    setMapLoading(true);
+    setBoundaryLoading(true);
 
     async function run(mapInstance: MapLibreMap) {
-      const source = mapInstance.getSource("districts") as any;
+      const source = mapInstance.getSource(DISTRICT_SOURCE_ID) as any;
       if (!source) {
-        if (!cancelled) setMapLoading(false);
+        if (!cancelled) setBoundaryLoading(false);
         return;
       }
 
-      // Deselection: clear geometry, no fetch issued.
       if (!selectedStateId) {
         if (cancelled) return;
         districtGeojsonRef.current = emptyFeatureCollection;
         geojsonLoadedForStateRef.current = null;
         source.setData(emptyFeatureCollection as any);
-        setMapLoading(false);
+        setBoundaryLoading(false);
         return;
       }
 
-      // Only re-fetch the GeoJSON when the state actually changes. The
-      // same state may be re-selected after a deselect; the cached
-      // polygon collection is reused to avoid a redundant network
-      // round-trip.
-      const stateChanged =
-        geojsonLoadedForStateRef.current !== selectedStateId;
-
+      const stateChanged = geojsonLoadedForStateRef.current !== selectedStateId;
       if (stateChanged || !districtGeojsonRef.current) {
         try {
           const geojson = await getDistrictsGeojson(selectedStateId);
@@ -236,16 +350,15 @@ function HydraMap() {
           source.setData(geojson as any);
         } catch (error) {
           if (cancelled) return;
-          // Geojson failed: clear and bail.
           districtGeojsonRef.current = emptyFeatureCollection;
           geojsonLoadedForStateRef.current = null;
           source.setData(emptyFeatureCollection as any);
-          setMapLoading(false);
+          setBoundaryLoading(false);
           return;
         }
       }
 
-      setMapLoading(false);
+      setBoundaryLoading(false);
     }
 
     if (map.isStyleLoaded()) {
@@ -257,28 +370,82 @@ function HydraMap() {
     return () => {
       cancelled = true;
     };
-    // State selection only depends on the selected state. Variable,
-    // start month and end month do NOT trigger any map refetch because
-    // no raster computation happens on the map surface anymore — the
-    // map only renders district polygon boundaries.
   }, [emptyFeatureCollection, selectedStateId]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const districtId = selectedDistrictId ?? "";
-    if (map.getLayer("districts-selected-fill")) {
-      map.setFilter("districts-selected-fill", ["==", ["get", "district_id"], districtId]);
+    let cancelled = false;
+    setRasterLoading(true);
+
+    async function run(mapInstance: MapLibreMap) {
+      if (!mapInstance.getSource(DISTRICT_RASTER_SOURCE_ID)) {
+        if (!cancelled) setRasterLoading(false);
+        return;
+      }
+
+      if (!selectedDistrictId || !activeRasterMonth || !rasterLayerEnabled) {
+        districtRasterRef.current = null;
+        setRasterData(mapInstance, null);
+        setRasterPaint(mapInstance, null);
+        setRasterLegend(null);
+        if (!cancelled) setRasterLoading(false);
+        return;
+      }
+
+      try {
+        const response = await getDistrictRasterClip(selectedDistrictId, {
+          year: activeRasterMonth.year,
+          month: activeRasterMonth.month,
+          variable: selectedVariable,
+        });
+        if (cancelled) return;
+        districtRasterRef.current = response;
+        setRasterData(mapInstance, response);
+        setRasterPaint(mapInstance, response);
+        setRasterLegend(response);
+      } catch (error) {
+        if (cancelled) return;
+        districtRasterRef.current = null;
+        setRasterData(mapInstance, null);
+        setRasterPaint(mapInstance, null);
+        setRasterLegend(null);
+      } finally {
+        if (!cancelled) setRasterLoading(false);
+      }
     }
-    if (map.getLayer("districts-selected-line")) {
-      map.setFilter("districts-selected-line", ["==", ["get", "district_id"], districtId]);
+
+    if (map.isStyleLoaded()) {
+      run(map);
+    } else {
+      map.once("load", () => run(map));
+    }
+
+    return () => {
+      cancelled = true;
+    };
+    // The district raster endpoint is a single-month slice. The
+    // current explorer exposes an inclusive range, so the map uses the
+    // selected end-month as the active snapshot.
+  }, [activeRasterMonth, rasterLayerEnabled, selectedDistrictId, selectedVariable]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const districtId = selectedDistrictId ?? "";
+    if (map.getLayer(DISTRICT_SELECTED_FILL_LAYER_ID)) {
+      map.setFilter(DISTRICT_SELECTED_FILL_LAYER_ID, ["==", ["get", "district_id"], districtId]);
+    }
+    if (map.getLayer(DISTRICT_SELECTED_LINE_LAYER_ID)) {
+      map.setFilter(DISTRICT_SELECTED_LINE_LAYER_ID, ["==", ["get", "district_id"], districtId]);
     }
 
     if (!selectedDistrictId) return;
     const geojson = districtGeojsonRef.current;
     const feature = geojson?.features?.find(
-      (f: any) => f?.properties?.district_id === selectedDistrictId
+      (f: any) => f?.properties?.district_id === selectedDistrictId,
     );
     const geometry = feature?.geometry;
     if (!geometry) return;
@@ -295,7 +462,10 @@ function HydraMap() {
       };
       pushCoords(geometry.coordinates);
       if (coords.length === 0) return null;
-      let minX = coords[0][0], minY = coords[0][1], maxX = coords[0][0], maxY = coords[0][1];
+      let minX = coords[0][0];
+      let minY = coords[0][1];
+      let maxX = coords[0][0];
+      let maxY = coords[0][1];
       for (const [x, y] of coords) {
         if (x < minX) minX = x;
         if (y < minY) minY = y;
@@ -328,6 +498,29 @@ function HydraMap() {
               aria-hidden="true"
             />
             Updating…
+          </div>
+        </div>
+      )}
+
+      {legendState && selectedDistrictId && rasterLayerEnabled && (
+        <div className="absolute bottom-4 right-4 z-10 pointer-events-none">
+          <div className="min-w-[240px] rounded-md border border-slate-200 bg-white/95 px-3 py-2.5 shadow-sm backdrop-blur-sm">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              {legendState.label}
+            </div>
+            <div
+              className="mb-1.5 h-3 w-full rounded-sm border border-slate-200"
+              style={{
+                background: `linear-gradient(90deg, ${VARIABLE_COLOR_STOPS[selectedVariable][0]} 0%, ${VARIABLE_COLOR_STOPS[selectedVariable][1]} 33%, ${VARIABLE_COLOR_STOPS[selectedVariable][2]} 66%, ${VARIABLE_COLOR_STOPS[selectedVariable][3]} 100%)`,
+              }}
+            />
+            <div className="flex justify-between text-[10px] font-medium text-slate-600">
+              <span>{formatLegendValue(legendState.min)}</span>
+              <span>{formatLegendValue(legendState.p25)}</span>
+              <span>{formatLegendValue(legendState.median)}</span>
+              <span>{formatLegendValue(legendState.p75)}</span>
+              <span>{formatLegendValue(legendState.max)}</span>
+            </div>
           </div>
         </div>
       )}

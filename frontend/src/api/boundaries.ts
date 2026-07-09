@@ -95,6 +95,70 @@ export interface DistrictMonthlySeries {
   points: MonthlySeriesPoint[];
 }
 
+export interface DistrictRasterClipFeature {
+  type: "Feature";
+  geometry: GeoJSON.Geometry;
+  properties: {
+    value: number;
+    variable: string;
+    nc_variable: string;
+    row: number;
+    col: number;
+    center_lon: number;
+    center_lat: number;
+    is_boundary_cell: boolean;
+    overlap_fraction: number;
+    display_value?: number;
+  };
+}
+
+export interface DistrictRasterClipResponse {
+  district_id: string;
+  district_name: string;
+  state_id: string;
+  state_name: string;
+  variable: string;
+  variable_long_name: string;
+  nc_variable: string;
+  units: string;
+  year: number;
+  month: number;
+  time_decoded: string;
+  source_resolution_deg: number;
+  bbox_used: [number, number, number, number];
+  feature_collection: {
+    type: "FeatureCollection";
+    features: DistrictRasterClipFeature[];
+  };
+  summary: {
+    valid_cells: number;
+    boundary_cells: number;
+    excluded_cells: number;
+    bbox_cells_total: number;
+    mean: number;
+    std: number;
+    min: number;
+    max: number;
+    sum: number;
+    median: number;
+    p25: number;
+    p75: number;
+    partial_geom_count: number;
+  };
+  diagnostics: Record<string, unknown>;
+  asset_id: string;
+  asset_storage_key: string;
+  cache_hit: boolean;
+}
+
+export interface DistrictRasterClipRequest {
+  year: number;
+  month: number;
+  variable: string;
+  padding_deg?: number;
+  provider?: string;
+}
+
 export async function getStates(): Promise<StateResponseItem[]> {
   return getJson<StateResponseItem[]>("/boundaries/states");
 }
@@ -226,6 +290,28 @@ export async function getDistrictMonthlySeries(
       __tsInFlight.delete(key);
     }
   }
+}
+
+export async function getDistrictRasterClip(
+  districtId: string,
+  params: DistrictRasterClipRequest,
+  signal?: AbortSignal,
+): Promise<DistrictRasterClipResponse> {
+  const search = new URLSearchParams({
+    year: String(params.year),
+    month: String(params.month),
+    variable: params.variable,
+  });
+  if (params.padding_deg !== undefined) {
+    search.set("padding_deg", String(params.padding_deg));
+  }
+  if (params.provider) {
+    search.set("provider", params.provider);
+  }
+  return getJson<DistrictRasterClipResponse>(
+    `/districts/${encodeURIComponent(districtId)}/raster-clip?${search.toString()}`,
+    signal,
+  );
 }
 
 export type ClimateAsset = {

@@ -93,6 +93,74 @@ class MonthlySeriesPoint:
 
 
 @dataclass
+class DistrictRasterClipResponse:
+    """End-to-end result of clipping one ERA5 variable/time-slice to a district.
+
+    This is the wire format for ``GET /districts/{district_id}/raster-clip``.
+    It bundles the human-readable district + variable metadata, the
+    GeoJSON ``FeatureCollection`` of clipped cells, summary statistics
+    over the clipped region, and operator-facing diagnostics (timings,
+    I/O counts, payload size).
+
+    The clipped cells preserve the original ERA5 cell value even when
+    the district border cuts the cell — the ``overlap_fraction`` field
+    reports how much of the cell lies inside the district and the
+    ``geometry`` field contains the exact intersected polygon.
+    """
+
+    district_id: str
+    district_name: str
+    state_id: str
+    state_name: str
+    variable: str
+    variable_long_name: str
+    nc_variable: str
+    units: str
+    year: int
+    month: int
+    time_decoded: str
+    source_resolution_deg: float
+    bbox_used: tuple[float, float, float, float]
+    feature_collection: dict
+    summary: dict
+    diagnostics: dict
+    asset_id: str
+    asset_storage_key: str
+    cache_hit: bool
+
+    @classmethod
+    def from_domain(cls, result) -> "DistrictRasterClipResponse":
+        """Build the wire DTO from a ``DistrictClipResult``.
+
+        Centralising the conversion here keeps the router thin and lets
+        the orchestrator evolve its internal dataclass without breaking
+        the public JSON contract.
+        """
+        meta = result.district_metadata
+        return cls(
+            district_id=meta.gid_2,
+            district_name=meta.name_2,
+            state_id=meta.gid_1,
+            state_name=meta.name_1,
+            variable=result.variable,
+            variable_long_name=result.variable_long_name,
+            nc_variable=result.nc_variable,
+            units=result.units,
+            year=result.year,
+            month=result.month,
+            time_decoded=result.time_decoded or "",
+            source_resolution_deg=result.source_resolution_deg,
+            bbox_used=result.bbox_used,
+            feature_collection=result.feature_collection,
+            summary=result.summary,
+            diagnostics=result.diagnostics,
+            asset_id=result.asset_id,
+            asset_storage_key=result.asset_storage_key,
+            cache_hit=result.cache_hit,
+        )
+
+
+@dataclass
 class DistrictMonthlySeriesResponse:
     """Per-month raster statistics for a district over an inclusive range."""
 

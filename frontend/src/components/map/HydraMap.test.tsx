@@ -1,47 +1,44 @@
-/**
- * Regression tests for H1.a (map-instance lifetime) and the
- * demand-driven district architecture.
- *
- * After the refactor, state selection must:
- *   - Create the MapLibre instance exactly once across many state
- *     changes (H1.a — unchanged).
- *   - Load district polygon boundaries (GeoJSON) only.
- *   - NOT trigger any whole-state choropleth raster computation.
- *     The backend `/states/{id}/districts/statistics` endpoint
- *     remains available for explicit on-demand use but must not be
- *     fetched automatically on state selection.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { useAppStore } from "../../stores/useAppStore";
 
-// Mock maplibre-gl with a constructor we can count. The factory is
-// invoked lazily by vitest when the component imports maplibre-gl.
+const sourceRegistry = new Map<string, { setData: ReturnType<typeof vi.fn> }>();
+
 vi.mock("maplibre-gl", () => {
-  const MockMap = vi.fn().mockImplementation(() => ({
-    on: vi.fn(),
-    once: vi.fn(),
-    off: vi.fn(),
-    remove: vi.fn(),
-    resize: vi.fn(),
-    fitBounds: vi.fn(),
-    addSource: vi.fn(),
-    addLayer: vi.fn(),
-    setData: vi.fn(),
-    setFilter: vi.fn(),
-    getSource: vi.fn().mockReturnValue({ setData: vi.fn() }),
-    getLayer: vi.fn().mockReturnValue(true),
-    isStyleLoaded: vi.fn().mockReturnValue(true),
-    queryRenderedFeatures: vi.fn().mockReturnValue([]),
-  }));
+  const MockMap = vi.fn().mockImplementation(() => {
+    const handlers = new Map<string, Array<(...args: any[]) => void>>();
+    return {
+      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+        if (event === "load") handler();
+      }),
+      once: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        if (event === "load") handler();
+      }),
+      off: vi.fn(),
+      remove: vi.fn(),
+      resize: vi.fn(),
+      fitBounds: vi.fn(),
+      addSource: vi.fn((id: string) => {
+        sourceRegistry.set(id, { setData: vi.fn() });
+      }),
+      addLayer: vi.fn(),
+      setFilter: vi.fn(),
+      setPaintProperty: vi.fn(),
+      getSource: vi.fn((id: string) => sourceRegistry.get(id)),
+      getLayer: vi.fn().mockReturnValue(true),
+      isStyleLoaded: vi.fn().mockReturnValue(true),
+      queryRenderedFeatures: vi.fn().mockReturnValue([]),
+    };
+  });
   return {
     default: { Map: MockMap },
     Map: MockMap,
   };
 });
 
-// Mock the boundaries API. getStateDistrictRangeStatistics is asserted
-// NEVER to be called from the map component after the refactor.
 vi.mock("../../api/boundaries", () => ({
   getStates: vi.fn().mockResolvedValue([]),
   getDatasets: vi.fn().mockResolvedValue([]),
@@ -50,27 +47,68 @@ vi.mock("../../api/boundaries", () => ({
     type: "FeatureCollection",
     features: [],
   }),
-  getStateDistrictRangeStatistics: vi.fn(),
+  getDistrictRasterClip: vi.fn().mockResolvedValue({
+    district_id: "IND.1.1.1_1",
+    district_name: "District One",
+    state_id: "IND.1.1_1",
+    state_name: "State One",
+    variable: "precipitation",
+    variable_long_name: "Precipitation",
+    nc_variable: "tp",
+    units: "m",
+    year: 2025,
+    month: 12,
+    time_decoded: "2025-12-01T00:00:00",
+    source_resolution_deg: 0.1,
+    bbox_used: [0, 0, 1, 1],
+    feature_collection: {
+      type: "FeatureCollection",
+      features: [],
+    },
+    summary: {
+      valid_cells: 1,
+      boundary_cells: 0,
+      excluded_cells: 0,
+      bbox_cells_total: 1,
+      mean: 1,
+      std: 0,
+      min: 1,
+      max: 1,
+      sum: 1,
+      median: 1,
+      p25: 1,
+      p75: 1,
+      partial_geom_count: 0,
+    },
+    diagnostics: {},
+    asset_id: "asset-1",
+    asset_storage_key: "era5-land/precipitation/2025/12.nc",
+    cache_hit: true,
+  }),
   getDistrictRangeStatistics: vi.fn(),
+  getStateDistrictRangeStatistics: vi.fn(),
   getDistrictMonthlySeries: vi.fn(),
 }));
 
 import HydraMap from "./HydraMap";
 import { Map as MapLibreMap } from "maplibre-gl";
 import {
-  getStateDistrictRangeStatistics,
+  getDistrictRasterClip,
   getDistrictsGeojson,
+  getStateDistrictRangeStatistics,
 } from "../../api/boundaries";
 
-const mockedStateStats = getStateDistrictRangeStatistics as unknown as ReturnType<typeof vi.fn>;
 const mockedGeojson = getDistrictsGeojson as unknown as ReturnType<typeof vi.fn>;
-
+const mockedRasterClip = getDistrictRasterClip as unknown as ReturnType<typeof vi.fn>;
+const mockedStateStats = getStateDistrictRangeStatistics as unknown as ReturnType<typeof vi.fn>;
 const MockMapCtor = MapLibreMap as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  sourceRegistry.clear();
   MockMapCtor.mockClear();
-  mockedStateStats.mockClear();
   mockedGeojson.mockClear();
+  mockedRasterClip.mockClear();
+  mockedStateStats.mockClear();
   useAppStore.setState({
     selectedStateId: null,
     selectedDistrictId: null,
@@ -78,39 +116,18 @@ beforeEach(() => {
     startMonth: "2025-01",
     endMonth: "2025-12",
     availableRange: { minYear: 2025, minMonth: 1, maxYear: 2025, maxMonth: 12 },
+    layers: {
+      rainfall: { enabled: true },
+      "soil-moisture": { enabled: true },
+      runoff: { enabled: true },
+    },
     states: [],
     districts: [],
   });
 });
 
-describe("HydraMap — H1.a map teardown fix", () => {
-  it("creates exactly one Map instance across many state changes", async () => {
-    render(<HydraMap />);
-    // One constructor call on initial mount.
-    expect(MockMapCtor).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      useAppStore.getState().setSelectedStateId("IND.1.1_1");
-    });
-    expect(MockMapCtor).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      useAppStore.getState().setSelectedStateId("IND.2.1_1");
-    });
-    expect(MockMapCtor).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      useAppStore.getState().setSelectedStateId("IND.3.1_1");
-    });
-    expect(MockMapCtor).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      useAppStore.getState().setSelectedStateId(null);
-    });
-    expect(MockMapCtor).toHaveBeenCalledTimes(1);
-  });
-
-  it("creates exactly one Map instance across district / variable / month changes", async () => {
+describe("HydraMap", () => {
+  it("creates exactly one Map instance across state, district, variable, and month changes", async () => {
     render(<HydraMap />);
     expect(MockMapCtor).toHaveBeenCalledTimes(1);
 
@@ -122,50 +139,12 @@ describe("HydraMap — H1.a map teardown fix", () => {
 
     await act(async () => {
       useAppStore.getState().setSelectedVariable("soil_moisture");
-      useAppStore.getState().setStartMonth("2025-06");
       useAppStore.getState().setEndMonth("2025-08");
     });
     expect(MockMapCtor).toHaveBeenCalledTimes(1);
   });
-});
 
-describe("HydraMap — demand-driven state selection", () => {
-  it("does NOT call getStateDistrictRangeStatistics on state selection", async () => {
-    render(<HydraMap />);
-
-    await act(async () => {
-      useAppStore.getState().setSelectedStateId("IND.1.1_1");
-    });
-    // Allow any microtasks scheduled by the effect to run.
-    await act(async () => {});
-    expect(mockedStateStats).not.toHaveBeenCalled();
-  });
-
-  it("does NOT call getStateDistrictRangeStatistics across many state changes, variable changes, or month-range changes", async () => {
-    render(<HydraMap />);
-
-    const stateIds = ["IND.1.1_1", "IND.2.1_1", "IND.3.1_1", "IND.4.1_1"];
-    for (const id of stateIds) {
-      await act(async () => {
-        useAppStore.getState().setSelectedStateId(id);
-      });
-      await act(async () => {
-        useAppStore.getState().setSelectedVariable(
-          ["precipitation", "soil_moisture", "surface_runoff"][
-            Math.floor(Math.random() * 3)
-          ],
-        );
-      });
-      await act(async () => {
-        useAppStore.getState().setStartMonth("2025-06");
-        useAppStore.getState().setEndMonth("2025-08");
-      });
-    }
-    await act(async () => {});
-    expect(mockedStateStats).not.toHaveBeenCalled();
-  });
-
-  it("DOES load district polygon boundaries (GeoJSON) on state selection", async () => {
+  it("loads district polygon boundaries on state selection", async () => {
     render(<HydraMap />);
 
     await act(async () => {
@@ -174,5 +153,64 @@ describe("HydraMap — demand-driven state selection", () => {
     await act(async () => {});
 
     expect(mockedGeojson).toHaveBeenCalledWith("IND.1.1_1");
+  });
+
+  it("fetches district raster cells from the raster-clip endpoint for the selected district, variable, and end month", async () => {
+    render(<HydraMap />);
+
+    await act(async () => {
+      useAppStore.getState().setSelectedStateId("IND.1.1_1");
+      useAppStore.getState().setSelectedDistrictId("IND.1.1.1_1");
+    });
+    await act(async () => {});
+
+    expect(mockedRasterClip).toHaveBeenCalledWith(
+      "IND.1.1.1_1",
+      {
+        year: 2025,
+        month: 12,
+        variable: "precipitation",
+      },
+    );
+  });
+
+  it("refetches the district raster when the active raster variable changes", async () => {
+    render(<HydraMap />);
+
+    await act(async () => {
+      useAppStore.getState().setSelectedStateId("IND.1.1_1");
+      useAppStore.getState().setSelectedDistrictId("IND.1.1.1_1");
+    });
+    await act(async () => {});
+
+    mockedRasterClip.mockClear();
+
+    await act(async () => {
+      useAppStore.getState().setSelectedVariable("soil_moisture");
+    });
+    await act(async () => {});
+
+    expect(mockedRasterClip).toHaveBeenCalledWith(
+      "IND.1.1.1_1",
+      {
+        year: 2025,
+        month: 12,
+        variable: "soil_moisture",
+      },
+    );
+  });
+
+  it("does not call the old whole-state statistics endpoint", async () => {
+    render(<HydraMap />);
+
+    await act(async () => {
+      useAppStore.getState().setSelectedStateId("IND.1.1_1");
+      useAppStore.getState().setSelectedDistrictId("IND.1.1.1_1");
+      useAppStore.getState().setSelectedVariable("surface_runoff");
+      useAppStore.getState().setEndMonth("2025-09");
+    });
+    await act(async () => {});
+
+    expect(mockedStateStats).not.toHaveBeenCalled();
   });
 });

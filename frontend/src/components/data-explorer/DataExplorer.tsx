@@ -30,10 +30,12 @@ function DataExplorer() {
   const startMonth = useAppStore((state) => state.startMonth);
   const endMonth = useAppStore((state) => state.endMonth);
   const availableRange = useAppStore((state) => state.availableRange);
+  const selectedVariable = useAppStore((state) => state.selectedVariable);
   const setStates = useAppStore((state) => state.setStates);
   const setDistricts = useAppStore((state) => state.setDistricts);
   const setSelectedStateId = useAppStore((state) => state.setSelectedStateId);
   const setSelectedDistrictId = useAppStore((state) => state.setSelectedDistrictId);
+  const setSelectedVariable = useAppStore((state) => state.setSelectedVariable);
   const setStartMonth = useAppStore((state) => state.setStartMonth);
   const setEndMonth = useAppStore((state) => state.setEndMonth);
   const setAvailableRange = useAppStore((state) => state.setAvailableRange);
@@ -317,10 +319,23 @@ function DataExplorer() {
             {(Object.keys(LAYER_LABELS) as LayerKey[]).map((layerKey) => {
               const data = LAYER_LABELS[layerKey];
               const enabled = layers[layerKey].enabled;
+              const active = selectedVariable === data.variable;
               return (
                 <div
                   key={layerKey}
-                  className="flex items-center justify-between h-9 px-2.5 rounded-md border border-slate-200 bg-white"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedVariable(data.variable)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedVariable(data.variable);
+                    }
+                  }}
+                  className={`flex items-center justify-between h-9 px-2.5 rounded-md border bg-white transition-colors ${
+                    active ? "border-slate-900 ring-1 ring-slate-300" : "border-slate-200"
+                  }`}
+                  aria-pressed={active}
                 >
                   <div className="flex items-center gap-2">
                     <span
@@ -341,7 +356,10 @@ function DataExplorer() {
                       {data.name}
                     </span>
                   </div>
-                  <Toggle checked={enabled} onChange={() => toggleLayer(layerKey)} />
+                  <Toggle
+                    checked={enabled}
+                    onChange={() => toggleLayer(layerKey)}
+                  />
                 </div>
               );
             })}
@@ -408,7 +426,10 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
       type="button"
       role="switch"
       aria-checked={checked}
-      onClick={onChange}
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange();
+      }}
       className={`relative h-5 w-9 rounded-full transition-colors ${
         checked ? "bg-blue-600" : "bg-slate-200"
       }`}

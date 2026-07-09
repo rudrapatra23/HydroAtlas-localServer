@@ -202,10 +202,10 @@ class RasterComputation:
         """Resolve ``asset`` through the shared raster cache and open it.
 
         The local cache file at
-        ``data/era5/cache/{provider}/{variable}/{YYYY}/{MM}.nc`` is reused
-        across requests; concurrent requests for the same asset coalesce
-        into one S3 download via the cache's per-key single-flight, and
-        opens are serialised per storage key via
+        ``Settings.raster_cache_root_resolved()/{provider}/{variable}/{YYYY}/{MM}.nc``
+        is reused across requests; concurrent requests for the same asset
+        coalesce into one S3 download via the cache's per-key single-flight,
+        and opens are serialised per storage key via
         :meth:`application.raster_cache.RasterCache.open_dataset`.
 
         Returns an :class:`~application.raster_cache.OpenRasterHandle`

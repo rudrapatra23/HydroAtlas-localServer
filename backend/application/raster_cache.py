@@ -51,6 +51,7 @@ from typing import AsyncIterator, Iterable, Iterator
 
 import xarray as xr
 
+from core.config import get_settings
 from domain.entities.climate_asset import ClimateAsset
 from domain.ports.storage_port import StoragePort
 from ingestion.era5.checksums import sha256_file
@@ -737,7 +738,7 @@ def _resolve_cache_root(cache_root: Path | None) -> Path:
     root = (
         cache_root.resolve()
         if cache_root is not None
-        else Path("data/era5/cache").resolve()
+        else get_settings().raster_cache_root_resolved()
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -787,12 +788,23 @@ class RasterCache:
     def __init__(
         self,
         cache_root: Path | None = None,
-        max_bytes: int = DEFAULT_RASTER_CACHE_MAX_BYTES,
+        max_bytes: int | None = None,
     ) -> None:
+        settings = None
+        if cache_root is None or max_bytes is None:
+            settings = get_settings()
+        if max_bytes is None:
+            assert settings is not None
+            max_bytes = int(settings.raster_cache_max_bytes)
         self._max_bytes = int(max_bytes)
         # Resolve cache root only when on-disk cache is enabled.
         self._cache_root: Path | None = (
-            _resolve_cache_root(cache_root) if self._max_bytes > 0 else None
+            _resolve_cache_root(
+                cache_root
+                if cache_root is not None
+                else settings.raster_cache_root_resolved() if settings is not None else None
+            )
+            if self._max_bytes > 0 else None
         )
         self._acquire_count = 0
         self._sweep_lock = threading.Lock()

@@ -54,28 +54,19 @@ const VARIABLE_CONFIGS: VariableConfig[] = [
   { variable: "surface_runoff", layerKey: "runoff", label: "Runoff", color: "#EA580C", icon: "waves", unit: getDisplayUnit("surface_runoff") },
 ];
 
-/**
- * Canonical variable set requested by both the right-side
- * `SelectedLocation` panel and this bottom panel. The chart tabs are
- * filtered to the user-enabled subset at render time; the fetch set is
- * always all three so the canonical key is shared.
- */
+
 const CANONICAL_VARIABLES: readonly CanonicalVariable[] = [
   "precipitation",
   "soil_moisture",
   "surface_runoff",
 ];
 
-/**
- * Variable ↔ LayerKey mapping used to filter chart datasets by which
- * layer toggles are enabled in Data Explorer. Lives at module scope so
- * the dependency array of the memoised enabled-list stays stable.
- */
-const VARIABLE_TO_LAYER: Record<CanonicalVariable, LayerKey> = {
-  precipitation: "rainfall",
-  soil_moisture: "soil-moisture",
-  surface_runoff: "runoff",
-};
+
+// const VARIABLE_TO_LAYER: Record<CanonicalVariable, LayerKey> = {
+//   precipitation: "rainfall",
+//   soil_moisture: "soil-moisture",
+//   surface_runoff: "runoff",
+// };
 
 type SeriesByVariable = Record<CanonicalVariable, MonthlySeriesPoint[]>;
 

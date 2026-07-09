@@ -1,20 +1,5 @@
-/**
- * Regression test for H1.b (see .kimchi/docs/race-diagnosis.md).
- *
- * Before the fix, the DataExplorer district-fetch effect had no
- * cancellation guard and no AbortController. Rapid state changes
- * S1 -> S2 -> S3 raced; whichever fetch resolved LAST won the
- * `setDistricts` call, so the dropdown could show districts of a
- * state the user no longer viewed.
- *
- * After the fix, each effect run creates an AbortController and an
- * identity guard compares the captured stateId against the store's
- * current selectedStateId before committing. A late-arriving response
- * for an older state is discarded even if the abort arrived after the
- * response body was parsed.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, act, waitFor } from "@testing-library/react";
+import { render, act, waitFor, fireEvent, screen } from "@testing-library/react";
 import { useAppStore } from "../../stores/useAppStore";
 
 // In-memory controllable promises per state id.
@@ -65,6 +50,7 @@ beforeEach(() => {
   useAppStore.setState({
     selectedStateId: null,
     selectedDistrictId: null,
+    selectedVariable: "precipitation",
     startMonth: "",
     endMonth: "",
     availableRange: null,
@@ -161,5 +147,15 @@ describe("DataExplorer — H1.b district-fetch race fix", () => {
       expect(s1Signal.aborted).toBe(true);
     });
     expect(abortSignals.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("sets the active raster variable when a layer row is selected", async () => {
+    render(<DataExplorer />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /soil moisture/i }));
+    });
+
+    expect(useAppStore.getState().selectedVariable).toBe("soil_moisture");
   });
 });
