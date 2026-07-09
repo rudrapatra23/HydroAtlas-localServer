@@ -30,10 +30,25 @@
 import { create } from "zustand";
 import {
   DistrictMonthlySeries,
+  MonthlySeriesPoint,
   getDistrictMonthlySeries,
 } from "../api/boundaries";
 
 export type Variable = "precipitation" | "soil_moisture" | "surface_runoff";
+
+const DISPLAY_UNITS_MM: Record<Variable, string> = {
+  precipitation: "mm",
+  soil_moisture: "mm",
+  surface_runoff: "mm",
+};
+
+const DISPLAY_FACTORS: Record<Variable, number> = {
+  precipitation: 1000,
+  // ERA5-Land ``swvl1`` is volumetric soil water for the top 0-7 cm
+  // layer; convert the fraction to equivalent water depth in mm.
+  soil_moisture: 70,
+  surface_runoff: 1000,
+};
 
 /** Sorted-variable-set equality is required for canonical key collisions. */
 export function canonicalKey(
@@ -309,5 +324,25 @@ export function deriveKpis(
     min,
     max,
     monthsProcessed: series.months_processed,
+  };
+}
+
+export function getDisplayUnit(variable: Variable): string {
+  return DISPLAY_UNITS_MM[variable];
+}
+
+export function toDisplayValue(variable: Variable, value: number): number {
+  return value * DISPLAY_FACTORS[variable];
+}
+
+export function toDisplayPoint(
+  variable: Variable,
+  point: MonthlySeriesPoint,
+): MonthlySeriesPoint {
+  return {
+    ...point,
+    mean: toDisplayValue(variable, point.mean),
+    min: toDisplayValue(variable, point.min),
+    max: toDisplayValue(variable, point.max),
   };
 }

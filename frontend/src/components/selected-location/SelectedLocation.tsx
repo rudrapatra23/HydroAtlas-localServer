@@ -5,7 +5,11 @@ import {
 } from "../../stores/useAppStore";
 import { motion } from "framer-motion";
 import { useDistrictData } from "../../hooks/useDistrictData";
-import { deriveKpis } from "../../stores/districtDataStore";
+import {
+  deriveKpis,
+  getDisplayUnit,
+  toDisplayValue,
+} from "../../stores/districtDataStore";
 
 interface KpiConfig {
   icon: string;
@@ -16,17 +20,11 @@ interface KpiConfig {
 }
 
 const KPI_CONFIGS: KpiConfig[] = [
-  { icon: "rainy", label: "Precipitation", variable: "precipitation", unit: "m", color: "#2563EB" },
-  { icon: "water_drop", label: "Soil Moisture", variable: "soil_moisture", unit: "m³/m³", color: "#16A34A" },
-  { icon: "waves", label: "Surface Runoff", variable: "surface_runoff", unit: "m", color: "#EA580C" },
+  { icon: "rainy", label: "Precipitation", variable: "precipitation", unit: getDisplayUnit("precipitation"), color: "#2563EB" },
+  { icon: "water_drop", label: "Soil Moisture", variable: "soil_moisture", unit: getDisplayUnit("soil_moisture"), color: "#16A34A" },
+  { icon: "waves", label: "Surface Runoff", variable: "surface_runoff", unit: getDisplayUnit("surface_runoff"), color: "#EA580C" },
 ];
 
-/**
- * Canonical variable set the right-panel always shows. Listed explicitly
- * (instead of being derived from layer toggles) because the right panel
- * is the user's single source of truth for "what climate variables exist
- * here" regardless of which chart tabs are visible below.
- */
 const PANEL_VARIABLES: readonly Variable[] = [
   "precipitation",
   "soil_moisture",
@@ -91,13 +89,6 @@ function KpiCard({
   );
 }
 
-/**
- * Small, non-blocking overlay rendered while a new query is in flight.
- * The previous committed KPI data stays visible underneath so the user
- * never sees a destructive blank during district / month / year / range
- * transitions. The badge is truthful: it only signals that a refresh is
- * in progress, not a fake percentage or fabricated backend stage.
- */
 function RefreshingBadge({ label = "Updating…" }: { label?: string }) {
   return (
     <div
@@ -137,10 +128,7 @@ function SelectedLocation() {
   const startMonth = useAppStore((state) => state.startMonth);
   const endMonth = useAppStore((state) => state.endMonth);
 
-  // Canonical demand-driven data fetch. The hook subscribes to the
-  // shared store and ensures exactly one fetch per (district, range,
-  // variable-set) key. Both this panel and the BottomPanel consume
-  // from the same store entry — no duplicate raster work.
+  
   const data = useDistrictData({
     districtId: selectedDistrictId,
     startMonth: startMonth || null,
@@ -148,11 +136,7 @@ function SelectedLocation() {
     variables: PANEL_VARIABLES,
   });
 
-  // Derive KPIs from the canonical time-series response. Equivalence
-  // with the previous /districts/{id}/statistics pipeline is proven
-  // analytically in `districtDataStore.ts` (mean-of-monthly-means
-  // equals min-of-monthly-mins equals max-of-monthly-maxes given the
-  // existing _compute_stats_for_geometry semantics).
+
   const kpisByVariable = useMemo(() => {
     const result: Partial<Record<Variable, { mean: number; min: number; max: number }>> = {};
     for (const v of PANEL_VARIABLES) {
@@ -167,9 +151,7 @@ function SelectedLocation() {
   const selectedState = states.find((s) => s.id === selectedStateId);
   const selectedDistrict = districts.find((d) => d.id === selectedDistrictId);
 
-  // "Has attempted" reflects whether the canonical entry has reached a
-  // terminal state for the current key. We use the presence of either
-  // a ready entry or an error/noData entry as the signal.
+ 
   const hasAttempted = data.ready || data.noData || data.error !== null;
   const showInitialSpinner = !hasAttempted && data.loading;
 
@@ -208,9 +190,6 @@ function SelectedLocation() {
     return null;
   }
 
-  // Show KPI cards whenever we have any per-variable KPI derived from
-  // the canonical store entry. This keeps the panel useful while a
-  // background refresh is running (the previous values stay visible).
   const hasAnyKpi = PANEL_VARIABLES.some((v) => kpisByVariable[v] !== undefined);
 
   return (
@@ -256,9 +235,7 @@ function SelectedLocation() {
           <div className="grid grid-cols-1 gap-2 mb-3">
             {KPI_CONFIGS.map((kpi) => {
               const k = kpisByVariable[kpi.variable];
-              // Render the card only when this variable's KPI is
-              // available in the canonical store. Otherwise leave a
-              // placeholder so the layout doesn't pop in/out.
+              
               if (!k) {
                 return (
                   <div
@@ -273,7 +250,7 @@ function SelectedLocation() {
                   key={kpi.variable}
                   icon={kpi.icon}
                   label={kpi.label}
-                  value={k.mean}
+                  value={toDisplayValue(kpi.variable, k.mean)}
                   unit={kpi.unit}
                   color={kpi.color}
                 />

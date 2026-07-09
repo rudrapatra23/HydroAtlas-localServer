@@ -28,7 +28,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { canonicalKey, deriveKpis, type Variable } from "./districtDataStore";
+import {
+  canonicalKey,
+  deriveKpis,
+  getDisplayUnit,
+  toDisplayPoint,
+  toDisplayValue,
+  type Variable,
+} from "./districtDataStore";
 
 describe("districtDataStore \u2014 scientific equivalence: deriveKpis vs /statistics", () => {
   it("derives mean/min/max identical to np.mean/np.min/np.max of monthly values", () => {
@@ -196,5 +203,34 @@ describe("districtDataStore \u2014 canonical key composition", () => {
     expect(
       canonicalKey("D1", "2025-01", "2025-12", ["precipitation"]),
     ).not.toBe(canonicalKey("D1", "2025-01", "2025-12", ["soil_moisture"]));
+  });
+});
+
+describe("districtDataStore — display-unit conversions", () => {
+  it("converts precipitation and surface runoff from meters to millimeters", () => {
+    expect(getDisplayUnit("precipitation")).toBe("mm");
+    expect(getDisplayUnit("surface_runoff")).toBe("mm");
+    expect(toDisplayValue("precipitation", 1.25)).toBeCloseTo(1250, 12);
+    expect(toDisplayValue("surface_runoff", 0.012)).toBeCloseTo(12, 12);
+  });
+
+  it("converts swvl1 soil moisture to equivalent millimeters over the 0-7 cm layer", () => {
+    expect(getDisplayUnit("soil_moisture")).toBe("mm");
+    expect(toDisplayValue("soil_moisture", 0.2)).toBeCloseTo(14, 12);
+    expect(
+      toDisplayPoint("soil_moisture", {
+        year: 2025,
+        month: 1,
+        mean: 0.2,
+        min: 0.1,
+        max: 0.25,
+      }),
+    ).toEqual({
+      year: 2025,
+      month: 1,
+      mean: 14,
+      min: 7,
+      max: 17.5,
+    });
   });
 });

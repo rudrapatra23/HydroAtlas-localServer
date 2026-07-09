@@ -1,39 +1,15 @@
-/**
- * Regression tests for the canonical district-data pipeline.
- *
- * The previous SelectedLocation issued three independent
- * `/districts/{id}/statistics` POSTs (one per variable) on every
- * district / month / year / range change. After the demand-driven
- * refactor, both the right panel and the BottomPanel consume from the
- * canonical `useDistrictData` hook, which dedupes per
- * (district, range, variables) key and issues one
- * `/districts/{id}/time-series` request per variable.
- *
- * These tests pin:
- *   1. Three `getDistrictMonthlySeries` calls fire on district select
- *      (one per canonical variable) \u2014 NOT six (no statistics +
- *      time-series duplication).
- *   2. State change clears loading immediately and discards stale
- *      in-flight responses.
- *   3. Rapid D1 \u2192 D2 \u2192 D3 only commits D3; D1/D2 stale responses
- *      cannot overwrite D3.
- *   4. KPI numbers shown for the right panel come from the canonical
- *      entry and equal the mean-of-monthly-means derived from the
- *      per-month series returned by `/time-series`.
- */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act, waitFor, screen } from "@testing-library/react";
 import { useAppStore } from "../../stores/useAppStore";
+import { useDistrictDataStore } from "../../stores/districtDataStore";
 
-// Hold every MonthlySeries request keyed by districtId.
 type Pending = {
   promise: Promise<any>;
   resolve: (value: any) => void;
   reject: (error: any) => void;
   signal?: AbortSignal;
 };
-const pendingByDistrict = new Map<string, Pending[]>();
+const pendingByKey = new Map<string, Pending[]>();
 
 function defaultSeriesResponse(
   districtId: string,
@@ -73,10 +49,11 @@ vi.mock("../../api/boundaries", () => ({
         resolve = res;
         reject = rej;
       });
-      const list = pendingByDistrict.get(districtId) ?? [];
+      const key = `${districtId}|${body.variable}`;
+      const list = pendingByKey.get(key) ?? [];
       const entry: Pending = { promise, resolve, reject, signal };
       list.push(entry);
-      pendingByDistrict.set(districtId, list);
+      pendingByKey.set(key, list);
       if (signal) {
         signal.addEventListener("abort", () => {
           const err = new DOMException("Aborted", "AbortError");
@@ -98,8 +75,14 @@ import { getDistrictMonthlySeries } from "../../api/boundaries";
 const mockedSeries = getDistrictMonthlySeries as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  pendingByDistrict.clear();
+  pendingByKey.clear();
   mockedSeries.mockClear();
+  useDistrictDataStore.setState({
+    byKey: {},
+    controllers: {},
+    generation: {},
+    inflight: {},
+  });
   useAppStore.setState({
     selectedStateId: "S1",
     selectedDistrictId: null,
@@ -123,27 +106,19 @@ function spinnerCount(container: HTMLElement): number {
   return container.querySelectorAll(".animate-spin").length;
 }
 
-/** Helper: resolve every pending /time-series request for a district
- * with a synthetic monthly series whose variable-keyed mean values are
- * `means[variable]`. */
-async function resolveAllSeries(
+function pendingCount(
   districtId: string,
-  means: Record<string, number[]>,
-) {
-  const pending = pendingByDistrict.get(districtId) ?? [];
-  for (const p of pending) {
-    // We do not know which variable each pending request is for;
-    // tests pass a single means dict keyed by variable.
-    // Look up by inspecting the original body — but we cannot here.
-    // Tests instead pre-arrange by inserting the right number of
-    // pending entries with `variable` captured externally. Use a
-    // simpler convention: pending list order is
-    // [precipitation, soil_moisture, surface_runoff] (the canonical
-    // ordering used by the store).
-  }
-  // Caller is expected to call the resolved promises directly. We
-  // provide a simpler per-district helper used by individual tests
-  // below that knows the variable assignment order.
+  variable: string,
+): number {
+  return pendingByKey.get(`${districtId}|${variable}`)?.length ?? 0;
+}
+
+function latestPending(
+  districtId: string,
+  variable: string,
+): Pending | undefined {
+  const list = pendingByKey.get(`${districtId}|${variable}`) ?? [];
+  return list[list.length - 1];
 }
 
 describe("SelectedLocation — canonical hook: per-district fetch count", () => {
@@ -151,9 +126,32 @@ describe("SelectedLocation — canonical hook: per-district fetch count", () => 
     useAppStore.setState({ selectedDistrictId: "D1" });
     render(<SelectedLocation />);
 
-    // Three canonical variables \u2192 three /time-series calls.
     await waitFor(() => {
-      expect(pendingByDistrict.get("D1")?.length).toBe(3);
+      expect(pendingCount("D1", "precipitation")).toBe(1);
+    });
+    await act(async () => {
+      latestPending("D1", "precipitation")?.resolve(
+        defaultSeriesResponse("D1", "precipitation", [1.0, 1.0, 1.0]),
+      );
+    });
+    await waitFor(() => {
+      expect(pendingCount("D1", "soil_moisture")).toBe(1);
+    });
+    await act(async () => {
+      latestPending("D1", "soil_moisture")?.resolve(
+        defaultSeriesResponse("D1", "soil_moisture", [1.0, 1.0, 1.0]),
+      );
+    });
+    await waitFor(() => {
+      expect(pendingCount("D1", "surface_runoff")).toBe(1);
+    });
+    await act(async () => {
+      latestPending("D1", "surface_runoff")?.resolve(
+        defaultSeriesResponse("D1", "surface_runoff", [1.0, 1.0, 1.0]),
+      );
+    });
+    await waitFor(() => {
+      expect(mockedSeries).toHaveBeenCalledTimes(3);
     });
 
     // The legacy /statistics endpoint is NEVER called from the right
@@ -169,7 +167,7 @@ describe("SelectedLocation — state change clears loading", () => {
     const { container } = render(<SelectedLocation />);
 
     await waitFor(() => {
-      expect(pendingByDistrict.get("D1")?.length).toBe(3);
+      expect(pendingCount("D1", "precipitation")).toBe(1);
     });
     expect(spinnerCount(container)).toBeGreaterThan(0);
 
@@ -182,13 +180,9 @@ describe("SelectedLocation — state change clears loading", () => {
 
     // Now resolve D1 pending requests. None may commit.
     await act(async () => {
-      const pending = pendingByDistrict.get("D1") ?? [];
-      // pending order: precipitation, soil_moisture, surface_runoff
-      const order = ["precipitation", "soil_moisture", "surface_runoff"];
-      for (let i = 0; i < pending.length; i++) {
-        const p = pending[i];
-        p.resolve(defaultSeriesResponse("D1", order[i] ?? "precipitation", [1.0, 1.0, 1.0]));
-      }
+      latestPending("D1", "precipitation")?.resolve(
+        defaultSeriesResponse("D1", "precipitation", [1.0, 1.0, 1.0]),
+      );
     });
 
     await new Promise((r) => setTimeout(r, 10));
@@ -203,64 +197,74 @@ describe("SelectedLocation — D1 -> D2 -> D3 rapid district changes", () => {
     render(<SelectedLocation />);
 
     await waitFor(() => {
-      expect(pendingByDistrict.get("D1")?.length).toBe(3);
+      expect(pendingCount("D1", "precipitation")).toBe(1);
     });
 
     await act(async () => {
       useAppStore.getState().setSelectedDistrictId("D2");
     });
     await waitFor(() => {
-      expect(pendingByDistrict.get("D2")?.length).toBe(3);
+      expect(pendingCount("D2", "precipitation")).toBe(1);
     });
 
     await act(async () => {
       useAppStore.getState().setSelectedDistrictId("D3");
     });
     await waitFor(() => {
-      expect(pendingByDistrict.get("D3")?.length).toBe(3);
+      expect(pendingCount("D3", "precipitation")).toBe(1);
     });
 
-    // Resolve D3 first with mean = 3.0 for precipitation, 3.0 for
-    // soil_moisture, 3.0 for surface_runoff.
     await act(async () => {
-      const pending = pendingByDistrict.get("D3") ?? [];
-      const order = ["precipitation", "soil_moisture", "surface_runoff"];
-      for (let i = 0; i < pending.length; i++) {
-        const p = pending[i];
-        p.resolve(defaultSeriesResponse("D3", order[i] ?? "precipitation", [3.0, 3.0, 3.0]));
-      }
+      latestPending("D3", "precipitation")?.resolve(
+        defaultSeriesResponse("D3", "precipitation", [3.0, 3.0, 3.0]),
+      );
+    });
+    await waitFor(() => {
+      expect(pendingCount("D3", "soil_moisture")).toBe(1);
+    });
+    await act(async () => {
+      latestPending("D3", "soil_moisture")?.resolve(
+        defaultSeriesResponse("D3", "soil_moisture", [3.0, 3.0, 3.0]),
+      );
+    });
+    await waitFor(() => {
+      expect(pendingCount("D3", "surface_runoff")).toBe(1);
+    });
+    await act(async () => {
+      latestPending("D3", "surface_runoff")?.resolve(
+        defaultSeriesResponse("D3", "surface_runoff", [3.0, 3.0, 3.0]),
+      );
     });
 
-    // D3 visible \u2014 one KPI card per variable, so "3.000000" appears 3x.
+    // D3 visible — displayed KPI values are converted to mm.
     await waitFor(() => {
-      expect(screen.queryAllByText("3.000000").length).toBe(3);
+      expect(screen.getAllByText("3000.000000").length).toBe(2);
+      expect(screen.getByText("210.000000")).toBeInTheDocument();
     });
 
     // Now resolve D2 with mean = 2.0. MUST NOT overwrite D3.
     await act(async () => {
-      const pending = pendingByDistrict.get("D2") ?? [];
-      const order = ["precipitation", "soil_moisture", "surface_runoff"];
-      for (let i = 0; i < pending.length; i++) {
-        const p = pending[i];
-        p.resolve(defaultSeriesResponse("D2", order[i] ?? "precipitation", [2.0, 2.0, 2.0]));
-      }
+      latestPending("D2", "precipitation")?.resolve(
+        defaultSeriesResponse("D2", "precipitation", [2.0, 2.0, 2.0]),
+      );
     });
     await new Promise((r) => setTimeout(r, 10));
-    expect(screen.queryAllByText("2.000000").length).toBe(0);
-    expect(screen.queryAllByText("3.000000").length).toBe(3);
+    expect(screen.queryByText("2000.000000")).not.toBeInTheDocument();
+    expect(screen.queryByText("140.000000")).not.toBeInTheDocument();
+    expect(screen.getAllByText("3000.000000").length).toBe(2);
+    expect(screen.getByText("210.000000")).toBeInTheDocument();
 
     // And D1 with mean = 1.0. MUST NOT overwrite.
     await act(async () => {
-      const pending = pendingByDistrict.get("D1") ?? [];
-      const order = ["precipitation", "soil_moisture", "surface_runoff"];
-      for (let i = 0; i < pending.length; i++) {
-        const p = pending[i];
-        p.resolve(defaultSeriesResponse("D1", order[i] ?? "precipitation", [1.0, 1.0, 1.0]));
-      }
+      latestPending("D1", "precipitation")?.resolve(
+        defaultSeriesResponse("D1", "precipitation", [1.0, 1.0, 1.0]),
+      );
     });
     await new Promise((r) => setTimeout(r, 10));
-    expect(screen.queryAllByText("1.000000").length).toBe(0);
-    expect(screen.queryAllByText("3.000000").length).toBe(3);
+    expect(screen.queryByText("1000.000000")).not.toBeInTheDocument();
+    expect(screen.queryByText("70.000000")).not.toBeInTheDocument();
+    expect(screen.getAllByText("3000.000000").length).toBe(2);
+    expect(screen.getByText("210.000000")).toBeInTheDocument();
 
     // Loading is now false (D3 cleared it).
     expect(spinnerCount(document.body)).toBe(0);

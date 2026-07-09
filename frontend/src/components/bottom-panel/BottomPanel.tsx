@@ -15,7 +15,11 @@ import { motion } from "framer-motion";
 import { useMemo } from "react";
 import { MonthlySeriesPoint } from "../../api/boundaries";
 import { useDistrictData } from "../../hooks/useDistrictData";
-import type { Variable as CanonicalVariable } from "../../stores/districtDataStore";
+import {
+  getDisplayUnit,
+  toDisplayPoint,
+  type Variable as CanonicalVariable,
+} from "../../stores/districtDataStore";
 
 ChartJS.register(
   CategoryScale,
@@ -45,9 +49,9 @@ interface VariableConfig {
 }
 
 const VARIABLE_CONFIGS: VariableConfig[] = [
-  { variable: "precipitation", layerKey: "rainfall", label: "Rainfall", color: "#2563EB", icon: "rainy", unit: "m" },
-  { variable: "soil_moisture", layerKey: "soil-moisture", label: "Soil Moisture", color: "#16A34A", icon: "water_drop", unit: "m³/m³" },
-  { variable: "surface_runoff", layerKey: "runoff", label: "Runoff", color: "#EA580C", icon: "waves", unit: "m" },
+  { variable: "precipitation", layerKey: "rainfall", label: "Rainfall", color: "#2563EB", icon: "rainy", unit: getDisplayUnit("precipitation") },
+  { variable: "soil_moisture", layerKey: "soil-moisture", label: "Soil Moisture", color: "#16A34A", icon: "water_drop", unit: getDisplayUnit("soil_moisture") },
+  { variable: "surface_runoff", layerKey: "runoff", label: "Runoff", color: "#EA580C", icon: "waves", unit: getDisplayUnit("surface_runoff") },
 ];
 
 /**
@@ -107,8 +111,8 @@ function linearRegression(points: MonthlySeriesPoint[]): { slope: number; interc
 
 function buildChartOptions(visibleConfigs?: VariableConfig[]) {
   // When `visibleConfigs` is supplied the chart uses two independent
-  // y-axes so Soil Moisture (~0.1–0.25 m³/m³) does not flatten
-  // Rainfall/Runoff (~0.0001–0.002 m) to a near-zero line. The trend
+  // y-axes so Soil Moisture (~7–18 mm equivalent water depth) does not
+  // flatten Rainfall/Runoff (~0.1–200 mm) to a near-zero line. The trend
   // tab calls this with no argument because it only ever plots Rainfall.
   const useDualAxis = Array.isArray(visibleConfigs);
   const hasSoil = useDualAxis
@@ -137,12 +141,12 @@ function buildChartOptions(visibleConfigs?: VariableConfig[]) {
       display: hasSoil,
       title: {
         display: hasSoil,
-        text: "Soil Moisture (m³/m³)",
+        text: "Soil Moisture (mm)",
         font: { family: "Inter, sans-serif", size: 11 },
         color: "#475569",
       },
       min: 0,
-      max: 0.4,
+      max: 30,
       grid: { color: "rgba(15, 23, 42, 0.06)" },
       ticks: {
         font: { family: "Inter, sans-serif" },
@@ -154,7 +158,7 @@ function buildChartOptions(visibleConfigs?: VariableConfig[]) {
       display: hasWater,
       title: {
         display: hasWater,
-        text: "Rainfall / Runoff (m)",
+        text: "Rainfall / Runoff (mm)",
         font: { family: "Inter, sans-serif", size: 11 },
         color: "#475569",
       },
@@ -229,9 +233,9 @@ function buildSeriesChart(
     labels,
     datasets: visibleConfigs.map((config) => {
       const points = series[config.variable];
-      // Soil Moisture uses the left axis (m³/m³, 0–0.3); Rainfall and
-      // Surface Runoff share the right axis (m, auto-fit). This stops
-      // Soil Moisture's larger magnitude from flattening the water-
+      // Soil Moisture uses the left axis (mm equivalent water depth);
+      // Rainfall and Surface Runoff share the right axis (mm, auto-fit).
+      // This stops Soil Moisture's typical range from flattening the water-
       // flux series into a near-zero line.
       const yAxisID =
         config.variable === "soil_moisture" ? "y-soil" : "y-water";
@@ -564,15 +568,23 @@ function BottomPanel() {
     return next;
   }, [data.seriesByVariable]);
 
+  const displaySeries: SeriesByVariable = useMemo(() => {
+    const next: SeriesByVariable = { ...EMPTY_SERIES };
+    for (const v of CANONICAL_VARIABLES) {
+      next[v] = series[v].map((point) => toDisplayPoint(v, point));
+    }
+    return next;
+  }, [series]);
+
   const monthsProcessed = data.monthsProcessed;
 
   const seriesChart = useMemo(
-    () => buildSeriesChart(series, monthsProcessed, enabledVariables),
-    [series, monthsProcessed, enabledVariables]
+    () => buildSeriesChart(displaySeries, monthsProcessed, enabledVariables),
+    [displaySeries, monthsProcessed, enabledVariables]
   );
   const trendChart = useMemo(
-    () => buildTrendChart(series, layers.rainfall.enabled),
-    [series, layers.rainfall.enabled]
+    () => buildTrendChart(displaySeries, layers.rainfall.enabled),
+    [displaySeries, layers.rainfall.enabled]
   );
 
   const rangeLabel = useMemo(() => {
@@ -662,7 +674,7 @@ function BottomPanel() {
               )}
               {bottomActiveTab === "statistics" && (
                 <StatisticsTab
-                  series={series}
+                  series={displaySeries}
                   monthsProcessed={monthsProcessed}
                   visibleConfigs={enabledVariables}
                 />
