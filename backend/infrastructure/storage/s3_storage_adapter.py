@@ -13,14 +13,21 @@ from domain.ports.storage_port import StoragePort
 class S3StorageAdapter(StoragePort):
     def __init__(self):
         settings = get_settings()
-        self.client = boto3.client(
-            "s3",
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
-            region_name=settings.aws_region,
-            endpoint_url=settings.s3_endpoint_url,
-            config=Config(signature_version="s3v4"),
-        )
+        # Only pass explicit static credentials / a custom endpoint when
+        # configured (local dev against LocalStack). In production
+        # (ECS/Fargate) these are left unset and boto3 falls back to the
+        # task's IAM role automatically via the default credential chain.
+        client_kwargs: dict = {
+            "region_name": settings.aws_region,
+            "config": Config(signature_version="s3v4"),
+        }
+        if settings.aws_access_key_id and settings.aws_secret_access_key:
+            client_kwargs["aws_access_key_id"] = settings.aws_access_key_id
+            client_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+        if settings.s3_endpoint_url:
+            client_kwargs["endpoint_url"] = settings.s3_endpoint_url
+ 
+        self.client = boto3.client("s3", **client_kwargs)
         self.bucket_name = settings.s3_bucket_name
 
     def upload(self, key: str, data: BinaryIO | bytes | Path) -> None:
