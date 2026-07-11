@@ -1,30 +1,3 @@
-"""ERA5-Land ingestion: PostgreSQL-as-source-of-truth per-variable flow.
-
-The refactor described in ``.kimchi/docs/era5-pg-source-of-truth.md`` replaced
-the bundle-level :class:`~ingestion.era5.manifest_manager.ManifestManager`
-with a per-variable lookup against the ``climate_assets`` PostgreSQL table.
-The local filesystem is now a transient per-variable cache at
-``storage_root/cache/{provider}/{variable}/{YYYY}/{MM}.nc``; deleting it
-never triggers an ERA5 download if metadata + S3 still exist.
-
-Public surface:
-
-- :meth:`Downloader.ensure_dataset` — the single entry point. Async.
-  Looks up PostgreSQL, then S3, then CDS in that order.
-- :meth:`Downloader.upload_to_s3_and_register` — uploads an already-normalized
-  per-variable NetCDF to S3 and inserts the matching ``ClimateAssetModel``
-  row. Used by :meth:`Downloader.ensure_dataset` internally and exposed for
-  callers that have already produced the per-variable file some other way
-  (e.g. a one-shot bootstrap from a local mirror).
-
-The legacy ``ensure_downloaded`` (sync CDS fetch) and ``publish``
-(split + upload + register) methods are removed; the CLI now iterates
-``ensure_dataset`` per ``(variable, year, month)``.
-
-The ``manifest.json`` file left over from the old code is harmless: nothing
-reads it. A future operator may delete it manually.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -155,20 +128,7 @@ class Downloader:
         month: int,
         repository: DatasetRepository,
     ) -> DatasetHandle:
-        """Resolve a single ``(provider, variable, year, month)`` dataset.
-
-        Lookup order:
-          1. PostgreSQL (``repository.get_by_period``).
-          2. S3 (download into local cache if the row exists but the
-             cache file is missing or has drifted).
-          3. CDS (download + split + upload + register).
-
-        Always emits a structured summary log line on completion. The
-        lock key is per-variable, so concurrent requests for *different*
-        variables on the same month do not block each other; concurrent
-        requests for the *same* variable coalesce via a DB re-check
-        inside the lock.
-        """
+        
         validate_year_month(year, month)
         timer = PhaseTimer()
         timer.start_total()
@@ -262,14 +222,7 @@ class Downloader:
         provider: str,
         source: Path,
     ) -> ClimateAsset:
-        """Upload an already-normalized per-variable NetCDF to S3 and
-        insert a :class:`ClimateAsset` row.
-
-        ``source`` is moved into the per-variable cache directory first
-        so the S3 upload and the local cache stay in sync. The local
-        cache is purely a downloaded-from-S3 mirror; whatever ends up in
-        S3 is the source of truth.
-        """
+       
         if self._storage_port is None:
             raise RuntimeError("StoragePort is not configured")
 
@@ -313,18 +266,7 @@ class Downloader:
         asset: ClimateAsset,
         repository: DatasetRepository,
     ) -> DatasetHandle:
-        """Restore a PostgreSQL-known asset whose S3 object is missing.
-
-        Repair order:
-          1. Re-upload from the local per-variable cache when the cache
-             file still exists and matches the row checksum.
-          2. Otherwise re-fetch from CDS and overwrite the existing row
-             in place using the same ``(provider, variable, year, month)``.
-
-        The existing downloader pipeline remains the only implementation
-        of CDS request construction, ZIP normalization, splitting, S3
-        upload, and checksum persistence.
-        """
+        
         if self._storage_port is None:
             raise RuntimeError("StoragePort is not configured")
 
@@ -391,15 +333,6 @@ class Downloader:
         month: int,
         timer: PhaseTimer,
     ) -> DatasetHandle:
-        """Resolve a DB-known asset to a local cache path.
-
-        - If the file is already in the per-variable cache and its
-          checksum matches the DB: ``cache_hit=True``.
-        - If the file is missing or has drifted: re-download from S3,
-          ``cache_hit=False``. Checksum drift is logged at WARNING and
-          triggers the re-download — silent local corruption should
-          never be served.
-        """
         if self._storage_port is None:
             raise RuntimeError("StoragePort is not configured")
 
@@ -466,13 +399,6 @@ class Downloader:
     ) -> DatasetHandle:
         """CDS download + split + cache + upload + register for a single
         ``(provider, variable, year, month)``.
-
-        The CDS request asks for *only* the variable the caller asked
-        for; the splitter then produces one per-variable file. Sibling
-        variables for the same month — if also missing — are picked up
-        by their own concurrent ``ensure_dataset`` calls; we do not try
-        to batch them here because the per-variable lock makes that a
-        race anyway.
         """
         if self._splitter is None:
             raise RuntimeError("DatasetSplitter is not configured")
@@ -578,13 +504,15 @@ class Downloader:
         month: int,
     ) -> dict[str, object]:
         return {
-            "product_type": "monthly_averaged_reanalysis",
+            "product_type": ["monthly_averaged_reanalysis"],
             "variable": [cds_variable],
-            "year": f"{year:04d}",
-            "month": f"{month:02d}",
-            "time": "00:00",
-            "format": "netcdf",
+            "year": [f"{year:04d}"],
+            "month": [f"{month:02d}"],
+            "time": ["00:00"],
+            "data_format": "netcdf",
         }
+        
+        
 
     async def _download_with_retry(
         self,
