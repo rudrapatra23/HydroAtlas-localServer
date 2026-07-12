@@ -1,6 +1,7 @@
 """Geospatial computation for ERA5 climate data."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import logging
 import time
@@ -265,70 +266,82 @@ class RasterComputation:
         assets: Iterable[ClimateAsset],
         geometry: gpd.GeoDataFrame,
         variable: str,
+        concurrency: int = 6,
     ) -> AggregatedRasterStats:
-        """Stream through ``assets`` sequentially and aggregate statistics.
+        """Fetch/open/clip up to ``concurrency`` months in parallel and aggregate.
 
-        Each raster is downloaded, opened, clipped, and freed before the
-        next one is touched, so peak memory stays bounded to a single
-        month's worth of pixels per geometry.
+        Same rationale as compute_monthly_series_for_district: the S3
+        download dominates per-month cost and is pure I/O wait, so
+        overlapping several downloads meaningfully cuts wall-clock time on
+        multi-year ranges. Actual netCDF opens remain serialized via
+        RasterCache.open_dataset's NATIVE_IO_LOCK regardless of
+        concurrency, so this does not reintroduce the concurrent-access
+        crash. Peak memory scales with concurrency, not range length.
         """
-        per_month_means: list[float] = []
-        per_month_mins: list[float] = []
-        per_month_maxes: list[float] = []
-        months_processed = 0
+        assets = list(assets)
+        semaphore = asyncio.Semaphore(concurrency)
+        t_request_start = time.perf_counter()
 
-        for asset in assets:
-            handle: OpenRasterHandle | None = None
-            try:
-                req_id = get_request_id()
-                logger.info(
-                    "ASSET_BEGIN request_id=%s asset=%s/%s/%04d-%02d",
-                    req_id, asset.provider, asset.variable, asset.year, asset.month,
-                )
-                flush()
-                handle = await self.read_raster_from_s3(asset)
-                raster = handle.dataset
-                logger.info(
-                    "DATASET_READY request_id=%s key=%s vars=%s",
-                    req_id, handle.lease._key, list(raster.data_vars),
-                )
-                flush()
-                logger.info(
-                    "VARIABLE_SELECT_BEGIN request_id=%s variable=%s",
-                    req_id, variable,
-                )
-                flush()
-                data = self._select_raster_variable(raster, variable)
-                safe_log(
-                    logging.INFO,
-                    "VARIABLE_SELECT_DONE request_id=%s nc_var=%s dims=%s shape=%s",
-                    req_id, data.name, tuple(data.dims), tuple(data.shape),
-                )
-                flush()
-                clip = self._compute_stats_for_geometry(data, geometry)
-                per_month_means.append(clip.mean)
-                per_month_mins.append(clip.minimum)
-                per_month_maxes.append(clip.maximum)
-                months_processed += 1
-                logger.info(
-                    "ASSET_DONE request_id=%s asset=%s/%s/%04d-%02d "
-                    "mean=%.6f min=%.6f max=%.6f",
-                    req_id, asset.provider, asset.variable, asset.year, asset.month,
-                    clip.mean, clip.minimum, clip.maximum,
-                )
-                flush()
-            finally:
-                if handle is not None:
+        async def _process_one(asset: ClimateAsset) -> tuple[tuple[float, float, float] | None, float, float]:
+            async with semaphore:
+                handle: OpenRasterHandle | None = None
+                t_fetch_start = time.perf_counter()
+                try:
+                    req_id = get_request_id()
                     logger.info(
-                        "DATASET_CLOSE_BEGIN request_id=%s key=%s",
-                        get_request_id(), handle.lease._key,
-                    )
-                    await handle.aclose()
-                    logger.info(
-                        "DATASET_CLOSE_DONE request_id=%s key=%s",
-                        get_request_id(), handle.lease._key,
+                        "ASSET_BEGIN request_id=%s asset=%s/%s/%04d-%02d",
+                        req_id, asset.provider, asset.variable, asset.year, asset.month,
                     )
                     flush()
+                    handle = await self.read_raster_from_s3(asset)
+                    t_fetch_open = time.perf_counter() - t_fetch_start
+                    raster = handle.dataset
+                    logger.info(
+                        "DATASET_READY request_id=%s key=%s vars=%s",
+                        req_id, handle.lease._key, list(raster.data_vars),
+                    )
+                    flush()
+                    data = self._select_raster_variable(raster, variable)
+                    safe_log(
+                        logging.INFO,
+                        "VARIABLE_SELECT_DONE request_id=%s nc_var=%s dims=%s shape=%s",
+                        req_id, data.name, tuple(data.dims), tuple(data.shape),
+                    )
+                    flush()
+                    t_clip_start = time.perf_counter()
+                    clip = self._compute_stats_for_geometry(data, geometry)
+                    t_clip = time.perf_counter() - t_clip_start
+                    logger.info(
+                        "ASSET_DONE request_id=%s asset=%s/%s/%04d-%02d "
+                        "mean=%.6f min=%.6f max=%.6f fetch_open_seconds=%.3f clip_seconds=%.3f",
+                        req_id, asset.provider, asset.variable, asset.year, asset.month,
+                        clip.mean, clip.minimum, clip.maximum, t_fetch_open, t_clip,
+                    )
+                    flush()
+                    return (clip.mean, clip.minimum, clip.maximum), t_fetch_open, t_clip
+                finally:
+                    if handle is not None:
+                        await handle.aclose()
+                        flush()
+
+        results = await asyncio.gather(*(_process_one(asset) for asset in assets))
+
+        per_month_means = [r[0][0] for r in results if r[0] is not None]
+        per_month_mins = [r[0][1] for r in results if r[0] is not None]
+        per_month_maxes = [r[0][2] for r in results if r[0] is not None]
+        months_processed = len(per_month_means)
+        total_fetch_open = sum(r[1] for r in results)
+        total_clip = sum(r[2] for r in results)
+        wall_seconds = time.perf_counter() - t_request_start
+        sequential_equivalent = total_fetch_open + total_clip
+        logger.info(
+            "TIMING_SUMMARY endpoint=district_range months=%d concurrency=%d "
+            "wall_seconds=%.2f total_fetch_open_seconds=%.2f total_clip_seconds=%.2f "
+            "sequential_equivalent_seconds=%.2f speedup=%.2fx",
+            months_processed, concurrency, wall_seconds,
+            total_fetch_open, total_clip, sequential_equivalent,
+            (sequential_equivalent / wall_seconds) if wall_seconds > 0 else 0.0,
+        )
 
         if months_processed == 0:
             raise ValueError("No climate data available for the selected period.")
@@ -349,14 +362,20 @@ class RasterComputation:
         end_month: int,
         variable: str = "precipitation",
         provider: str = "era5-land",
+        concurrency: int = 6,
     ) -> list[MonthlySeriesPoint]:
         """Return per-month raster statistics for a district over a range.
 
-        Mirrors the memory discipline of compute_for_district_range: each
-        asset is downloaded, opened, clipped, closed, and unlinked before
-        the next iteration so peak memory stays bounded to a single
-        month's worth of pixels. Returned list is ordered ascending by
-        (year, month).
+        Fetches/opens up to ``concurrency`` months in parallel. The S3
+        download is the dominant cost per month (~0.6-0.7s) and is pure
+        I/O wait, so overlapping several downloads gives a large wall-clock
+        win on multi-year ranges. The actual netCDF/HDF5 open still goes
+        through RasterCache.open_dataset's NATIVE_IO_LOCK, so opens remain
+        strictly serialized regardless of how many months are in flight --
+        this does not reintroduce the concurrent-access crash.
+
+        Peak memory scales with ``concurrency`` (each in-flight month holds
+        one open dataset), not with the total range length.
         """
         geometry = self.get_district_geometry(district_gid)
         assets = await self.repository.list_by_period_range(
@@ -374,32 +393,63 @@ class RasterComputation:
         if not assets:
             raise ValueError("No climate data available for the selected period.")
 
-        points: list[MonthlySeriesPoint] = []
-        for asset in assets:
-            handle: OpenRasterHandle | None = None
-            try:
-                handle = await self.read_raster_from_s3(asset)
-                raster = handle.dataset
-                data = self._select_raster_variable(raster, variable)
-                clip = self._compute_stats_for_geometry(data, geometry)
-                points.append(
-                    MonthlySeriesPoint(
+        semaphore = asyncio.Semaphore(concurrency)
+        t_request_start = time.perf_counter()
+
+        async def _process_one(asset: ClimateAsset) -> tuple[MonthlySeriesPoint, float, float]:
+            async with semaphore:
+                handle: OpenRasterHandle | None = None
+                t_fetch_start = time.perf_counter()
+                try:
+                    handle = await self.read_raster_from_s3(asset)
+                    t_fetch_open = time.perf_counter() - t_fetch_start
+                    raster = handle.dataset
+                    data = self._select_raster_variable(raster, variable)
+                    t_clip_start = time.perf_counter()
+                    clip = self._compute_stats_for_geometry(data, geometry)
+                    t_clip = time.perf_counter() - t_clip_start
+                    logger.info(
+                        "Monthly series point %04d-%02d for district %s: mean=%.6f "
+                        "fetch_open_seconds=%.3f clip_seconds=%.3f",
+                        asset.year, asset.month, district_gid, clip.mean,
+                        t_fetch_open, t_clip,
+                    )
+                    point = MonthlySeriesPoint(
                         year=asset.year,
                         month=asset.month,
                         mean=clip.mean,
                         min=clip.minimum,
                         max=clip.maximum,
                     )
-                )
-                logger.info(
-                    "Monthly series point %04d-%02d for district %s: mean=%.6f",
-                    asset.year, asset.month, district_gid, clip.mean,
-                )
-            finally:
-                if handle is not None:
-                    await handle.aclose()
+                    return point, t_fetch_open, t_clip
+                finally:
+                    if handle is not None:
+                        await handle.aclose()
 
-        return points
+        results = await asyncio.gather(*(_process_one(asset) for asset in assets))
+
+        points = [r[0] for r in results]
+        total_fetch_open = sum(r[1] for r in results)
+        total_clip = sum(r[2] for r in results)
+        wall_seconds = time.perf_counter() - t_request_start
+        # sequential_equivalent is what wall time would have been at
+        # concurrency=1 -- compares directly against the old behaviour.
+        sequential_equivalent = total_fetch_open + total_clip
+        logger.info(
+            "TIMING_SUMMARY endpoint=district_time_series district_id=%s months=%d "
+            "concurrency=%d wall_seconds=%.2f total_fetch_open_seconds=%.2f "
+            "total_clip_seconds=%.2f sequential_equivalent_seconds=%.2f speedup=%.2fx "
+            "avg_fetch_open_per_month=%.3f avg_clip_per_month=%.4f",
+            district_gid, len(points), concurrency, wall_seconds,
+            total_fetch_open, total_clip, sequential_equivalent,
+            (sequential_equivalent / wall_seconds) if wall_seconds > 0 else 0.0,
+            total_fetch_open / len(points) if points else 0.0,
+            total_clip / len(points) if points else 0.0,
+        )
+
+        # gather preserves call order, which matches assets' query order,
+        # but sort explicitly so callers never depend on repository ordering.
+        return sorted(points, key=lambda p: (p.year, p.month))
 
     async def compute_for_district(
         self,

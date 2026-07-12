@@ -11,6 +11,8 @@ build/
 clipped_output/
 temp_raster.nc
 data/
+!data/boundaries
+!data/boundaries/gadm41_IND.gpkg
 *.log
 *.tmp
 .git/
