@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-# Diagnostics must be installed BEFORE any native library import.
-# xarray, netCDF4, rasterio are imported lazily by the request path,
-# so installing faulthandler here covers the entire process lifetime.
+# Diagnostics must be installed before any native library import (xarray,
+# netCDF4, rasterio are imported lazily by the request path).
 from application.diagnostics import setup_diagnostics
 setup_diagnostics()
 
-# Activate the persistent NATIVE_* lifecycle sink as early as possible
-# so crash-adjacent lines survive 0xC0000005. Default path is
-# backend/native_lifecycle.log; flush+fsync per line; failures are
-# swallowed inside the helper. No behavioral change.
+# Persistent NATIVE_* lifecycle sink, active early so crash-adjacent lines
+# survive 0xC0000005. Defaults to backend/native_lifecycle.log.
 from application.diagnostics import setup_lifecycle_log
 setup_lifecycle_log()
 
@@ -17,7 +14,7 @@ import logging  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from fastapi import FastAPI  # noqa: E402  (import after diagnostics)
+from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from api.routers import health, datasets, boundaries, districts, states  # noqa: E402
@@ -30,12 +27,9 @@ logger = logging.getLogger("uvicorn.error")
 def _validate_gadm_on_disk() -> None:
     """Log the resolved GADM path on startup; warn loudly if missing.
 
-    We deliberately do not raise here so a missing GADM file does not
-    crash the whole process — the rest of HydroAtlas (datasets,
-    health, etc.) is still useful for ops. Instead we emit a loud
-    WARNING that surfaces in ``uvicorn.error`` and the operator
-    dashboard. The first request to a district endpoint will fail
-    with a clear FileNotFoundError from the boundary loader.
+    Doesn't raise — a missing GADM file shouldn't crash the whole process,
+    since health/datasets endpoints are still useful. District-level
+    endpoints will fail with a clear FileNotFoundError on first request.
     """
     gadm_path = Path(_GADM_PATH)
     if not gadm_path.exists():
@@ -55,14 +49,7 @@ def _validate_gadm_on_disk() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: validate data dependencies on startup.
-
-    Kept lightweight — we never block startup on a real S3 download.
-    The first request to ``/districts/{id}/raster-clip`` will fail
-    with a clear 404/503 message if the underlying NetCDF cannot be
-    fetched; doing that lazily keeps the process responsive even when
-    S3 is briefly unreachable.
-    """
+    """Validate data dependencies on startup without blocking on S3."""
     logger.info("STARTUP_BEGIN app=%s version=%s",
                 app.title, app.version)
     _validate_gadm_on_disk()
@@ -89,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "http://127.0.0.1:5173",
             "http://localhost:4173",
             "http://127.0.0.1:4173",
+            "http://hydroatlas-frontend-alb-322053000.ap-south-1.elb.amazonaws.com",
         ],
         allow_credentials=True,
         allow_methods=["*"],
