@@ -291,7 +291,7 @@ def read_netcdf_as_array(
         time_decoded = None
         if "valid_time" in ds.variables:
             t_val = int(np.array(ds.variables["valid_time"][:])[time_index])
-            time_decoded = str(datetime.datetime.fromtimestamp(t_val, tz=datetime.timezone.utc))
+            time_decoded = str(datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=t_val))
 
         try:
             units = var_obj.getncattr("units")
