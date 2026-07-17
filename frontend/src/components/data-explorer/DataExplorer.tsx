@@ -1,7 +1,6 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useAppStore,
-  yearMonthToMonthString,
   monthStringToYearMonth,
   LayerKey,
 } from "../../stores/useAppStore";
@@ -28,6 +27,11 @@ const SELECT_CLASS =
 const FIELD_LABEL_CLASS = "block text-xs text-slate-600 mb-1";
 const SECTION_LABEL_CLASS = "text-[11px] font-semibold uppercase tracking-wider text-slate-500";
 
+interface AvailablePeriods {
+  years: number[];
+  monthsByYear: Record<number, number[]>;
+}
+
 function DataExplorer() {
   const sidebarOpen = useAppStore((state) => state.leftSidebarOpen);
   const setSidebarOpen = useAppStore((state) => state.setLeftSidebarOpen);
@@ -39,7 +43,6 @@ function DataExplorer() {
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
   const startMonth = useAppStore((state) => state.startMonth);
   const endMonth = useAppStore((state) => state.endMonth);
-  const availableRange = useAppStore((state) => state.availableRange);
   const selectedVariable = useAppStore((state) => state.selectedVariable);
   const setStates = useAppStore((state) => state.setStates);
   const setDistricts = useAppStore((state) => state.setDistricts);
@@ -49,6 +52,14 @@ function DataExplorer() {
   const setStartMonth = useAppStore((state) => state.setStartMonth);
   const setEndMonth = useAppStore((state) => state.setEndMonth);
   const setAvailableRange = useAppStore((state) => state.setAvailableRange);
+  const [startYearDraft, setStartYearDraft] = useState<number | null>(null);
+  const [startMonthDraft, setStartMonthDraft] = useState<number | null>(null);
+  const [endYearDraft, setEndYearDraft] = useState<number | null>(null);
+  const [endMonthDraft, setEndMonthDraft] = useState<number | null>(null);
+  const [availablePeriods, setAvailablePeriods] = useState<AvailablePeriods>({
+    years: [],
+    monthsByYear: {},
+  });
 
   // A period must be chosen before region selection unlocks. This keeps
   // users from picking a district before they've scoped the time range
@@ -70,9 +81,22 @@ function DataExplorer() {
         const assets = await getDatasets();
         if (cancelled) return;
         if (assets.length === 0) {
+          setAvailablePeriods({ years: [], monthsByYear: {} });
           setAvailableRange(null);
           return;
         }
+        const monthsByYear = assets.reduce<Record<number, Set<number>>>((acc, asset) => {
+          if (!acc[asset.year]) acc[asset.year] = new Set<number>();
+          acc[asset.year].add(asset.month);
+          return acc;
+        }, {});
+        const years = Object.keys(monthsByYear)
+          .map(Number)
+          .sort((a, b) => a - b);
+        const normalizedMonthsByYear = Object.fromEntries(
+          years.map((year) => [year, Array.from(monthsByYear[year]).sort((a, b) => a - b)]),
+        ) as Record<number, number[]>;
+        setAvailablePeriods({ years, monthsByYear: normalizedMonthsByYear });
         let minYear = assets[0].year, minMonth = assets[0].month;
         let maxYear = assets[0].year, maxMonth = assets[0].month;
         for (const asset of assets) {
@@ -81,8 +105,6 @@ function DataExplorer() {
           if (key > maxYear * 12 + (maxMonth - 1)) [maxYear, maxMonth] = [asset.year, asset.month];
         }
         setAvailableRange({ minYear, minMonth, maxYear, maxMonth });
-        if (!startMonth) setStartMonth(yearMonthToMonthString(minYear, minMonth));
-        if (!endMonth) setEndMonth(yearMonthToMonthString(maxYear, maxMonth));
       } catch (error) {
         if (!cancelled) console.error("Failed to fetch dataset range:", error);
       }
@@ -130,28 +152,106 @@ function DataExplorer() {
   const startYM = useMemo(() => monthStringToYearMonth(startMonth), [startMonth]);
   const endYM = useMemo(() => monthStringToYearMonth(endMonth), [endMonth]);
 
-  const yearOptions = useMemo(() => {
-    if (!availableRange) {
-      const fallback = new Date().getFullYear();
-      return [fallback - 1, fallback, fallback + 1];
+  const startYear = startYearDraft;
+  const startMonthValue = startMonthDraft;
+  const endYear = endYearDraft;
+  const endMonthValue = endMonthDraft;
+
+  const startMonthOptions = startYear ? availablePeriods.monthsByYear[startYear] ?? [] : [];
+  const endMonthOptions = endYear ? availablePeriods.monthsByYear[endYear] ?? [] : [];
+
+  useEffect(() => {
+    if (!startMonth) {
+      setStartYearDraft(null);
+      setStartMonthDraft(null);
+    } else if (startYM) {
+      setStartYearDraft(startYM.year);
+      setStartMonthDraft(startYM.month);
     }
-    const years: number[] = [];
-    for (let y = availableRange.minYear; y <= availableRange.maxYear; y++) years.push(y);
-    return years;
-  }, [availableRange]);
+  }, [startMonth, startYM]);
+
+  useEffect(() => {
+    if (!endMonth) {
+      setEndYearDraft(null);
+      setEndMonthDraft(null);
+    } else if (endYM) {
+      setEndYearDraft(endYM.year);
+      setEndMonthDraft(endYM.month);
+    }
+  }, [endMonth, endYM]);
 
   // Enforces Start <= End by snapping the other end forward/back when a
   // pick would invert the range.
-  const handleStartChange = (year: number, month: number) => {
-    setStartMonth(yearMonthToMonthString(year, month));
-    const endKey = endYM ? endYM.year * 12 + endYM.month : -1;
-    if (year * 12 + month > endKey) setEndMonth(yearMonthToMonthString(year, month));
+  const handleStartYearChange = (year: number | null) => {
+    if (year === null) {
+      setStartYearDraft(null);
+      setStartMonthDraft(null);
+      setStartMonth("");
+      return;
+    }
+    setStartYearDraft(year);
+    const availableMonths = availablePeriods.monthsByYear[year] ?? [];
+    const nextMonth = startMonthValue && availableMonths.includes(startMonthValue)
+      ? startMonthValue
+      : availableMonths[0] ?? null;
+    setStartMonthDraft(nextMonth);
+    if (nextMonth !== null) {
+      setStartMonth(`${year}-${String(nextMonth).padStart(2, "0")}`);
+    } else {
+      setStartMonth("");
+    }
   };
 
-  const handleEndChange = (year: number, month: number) => {
-    setEndMonth(yearMonthToMonthString(year, month));
-    const startKey = startYM ? startYM.year * 12 + startYM.month : Number.MAX_SAFE_INTEGER;
-    if (year * 12 + month < startKey) setStartMonth(yearMonthToMonthString(year, month));
+  const handleStartMonthChange = (month: number | null) => {
+    if (startYear === null || month === null) {
+      setStartMonthDraft(month);
+      setStartMonth("");
+      return;
+    }
+    setStartMonthDraft(month);
+    const nextStart = `${startYear}-${String(month).padStart(2, "0")}`;
+    setStartMonth(nextStart);
+    const nextKey = startYear * 12 + month;
+    const endKey = endYM ? endYM.year * 12 + endYM.month : null;
+    if (endKey !== null && nextKey > endKey) {
+      setEndMonth(nextStart);
+    }
+  };
+
+  const handleEndYearChange = (year: number | null) => {
+    if (year === null) {
+      setEndYearDraft(null);
+      setEndMonthDraft(null);
+      setEndMonth("");
+      return;
+    }
+    setEndYearDraft(year);
+    const availableMonths = availablePeriods.monthsByYear[year] ?? [];
+    const nextMonth = endMonthValue && availableMonths.includes(endMonthValue)
+      ? endMonthValue
+      : availableMonths[availableMonths.length - 1] ?? null;
+    setEndMonthDraft(nextMonth);
+    if (nextMonth !== null) {
+      setEndMonth(`${year}-${String(nextMonth).padStart(2, "0")}`);
+    } else {
+      setEndMonth("");
+    }
+  };
+
+  const handleEndMonthChange = (month: number | null) => {
+    if (endYear === null || month === null) {
+      setEndMonthDraft(month);
+      setEndMonth("");
+      return;
+    }
+    setEndMonthDraft(month);
+    const nextEnd = `${endYear}-${String(month).padStart(2, "0")}`;
+    setEndMonth(nextEnd);
+    const nextKey = endYear * 12 + month;
+    const startKey = startYM ? startYM.year * 12 + startYM.month : null;
+    if (startKey !== null && nextKey < startKey) {
+      setStartMonth(nextEnd);
+    }
   };
 
   if (!sidebarOpen) {
@@ -185,30 +285,34 @@ function DataExplorer() {
       <div className="px-4 py-4 space-y-5">
         {/* PERIOD — chosen first; everything else scopes to this range */}
         <div className="space-y-2">
-          <p className={SECTION_LABEL_CLASS}>1. Period</p>
+          <p className={SECTION_LABEL_CLASS}>Period</p>
           <div className="space-y-2">
             <PeriodRow
               idPrefix="start"
               label="Start month"
-              year={startYM?.year ?? yearOptions[0]}
-              month={startYM?.month ?? 1}
-              yearOptions={yearOptions}
-              onChange={handleStartChange}
+              year={startYear}
+              month={startMonthValue}
+              yearOptions={availablePeriods.years}
+              monthOptions={startMonthOptions}
+              onYearChange={handleStartYearChange}
+              onMonthChange={handleStartMonthChange}
             />
             <PeriodRow
               idPrefix="end"
               label="End month"
-              year={endYM?.year ?? yearOptions[yearOptions.length - 1]}
-              month={endYM?.month ?? 12}
-              yearOptions={yearOptions}
-              onChange={handleEndChange}
+              year={endYear}
+              month={endMonthValue}
+              yearOptions={availablePeriods.years}
+              monthOptions={endMonthOptions}
+              onYearChange={handleEndYearChange}
+              onMonthChange={handleEndMonthChange}
             />
           </div>
         </div>
 
         {/* REGION — locked until a period is set */}
         <div className="space-y-2">
-          <p className={SECTION_LABEL_CLASS}>2. Region</p>
+          <p className={SECTION_LABEL_CLASS}>Region</p>
           {!periodReady && (
             <p className="text-xs text-slate-400">Select a period above to choose a region.</p>
           )}
@@ -308,14 +412,18 @@ function PeriodRow({
   year,
   month,
   yearOptions,
-  onChange,
+  monthOptions,
+  onYearChange,
+  onMonthChange,
 }: {
   idPrefix: string;
   label: string;
-  year: number;
-  month: number;
+  year: number | null;
+  month: number | null;
   yearOptions: number[];
-  onChange: (year: number, month: number) => void;
+  monthOptions: number[];
+  onYearChange: (year: number | null) => void;
+  onMonthChange: (month: number | null) => void;
 }) {
   return (
     <div>
@@ -324,10 +432,11 @@ function PeriodRow({
         <select
           id={`${idPrefix}-year`}
           aria-label={`${label} year`}
-          value={year}
-          onChange={(e) => onChange(Number(e.target.value), month)}
+          value={year ?? ""}
+          onChange={(e) => onYearChange(e.target.value ? Number(e.target.value) : null)}
           className={`flex-1 ${SELECT_CLASS} tabular-nums`}
         >
+          <option value="">Year</option>
           {yearOptions.map((y) => (
             <option key={y} value={y}>{y}</option>
           ))}
@@ -335,12 +444,14 @@ function PeriodRow({
         <select
           id={`${idPrefix}-month`}
           aria-label={`${label} month`}
-          value={month}
-          onChange={(e) => onChange(year, Number(e.target.value))}
+          value={month ?? ""}
+          onChange={(e) => onMonthChange(e.target.value ? Number(e.target.value) : null)}
+          disabled={year === null}
           className={`flex-[1.2] ${SELECT_CLASS}`}
         >
-          {MONTH_NAMES.map((name, idx) => (
-            <option key={name} value={idx + 1}>{name}</option>
+          <option value="">Month</option>
+          {monthOptions.map((monthNumber) => (
+            <option key={monthNumber} value={monthNumber}>{MONTH_NAMES[monthNumber - 1]}</option>
           ))}
         </select>
       </div>

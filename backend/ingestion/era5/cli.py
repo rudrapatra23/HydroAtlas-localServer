@@ -1,27 +1,4 @@
-"""ERA5-Land ingestion CLI.
-
-Drives :class:`~ingestion.era5.downloader.Downloader` from the command line
-against PostgreSQL-as-source-of-truth: every subcommand iterates
-``ensure_dataset(provider, variable, year, month, repository)`` and the
-``status`` subcommand reads the ``climate_assets`` table directly instead
-of the deleted ``manifest.json``.
-
-Usage:
-    python -m ingestion.era5.cli download YEAR MONTH [--variable V] [--publish]
-    python -m ingestion.era5.cli bootstrap [N_MONTHS] [--variable V] [--publish]
-    python -m ingestion.era5.cli backfill YEAR [--variable V] [--publish]
-    python -m ingestion.era5.cli status [--variable V]
-    python -m ingestion.era5.cli doctor
-
-When ``--variable`` is omitted, every category exposed by the splitter
-(``precipitation``, ``soil_moisture``, ``surface_runoff``) is processed
-sequentially. ``--publish`` is implicit for these commands — there is no
-"download only" mode that bypasses PostgreSQL, because the pipeline's
-purpose is to keep the ``climate_assets`` table in sync with S3.
-
-Nightly execution is intentionally out of scope — wire ``bootstrap`` into
-cron / Windows Task Scheduler / deployment infrastructure separately.
-"""
+"""Era5-land ingestion cli."""
 
 from __future__ import annotations
 
@@ -65,13 +42,7 @@ DEFAULT_PROVIDER = "era5-land"
 
 
 def _categories() -> list[str]:
-    """Return the deduplicated list of logical categories the splitter
-    is configured to emit, in declaration order.
-
-    Mirrors the order in :data:`ingestion.era5.splitter.DEFAULT_ERA5_VARIABLES`
-    so ``download`` produces a deterministic (variable, year, month) traversal
-    regardless of dict iteration order.
-    """
+    """Return the deduplicated list of logical categories the splitter."""
     seen: list[str] = []
     for var in DEFAULT_ERA5_VARIABLES:
         category = VARIABLE_CATEGORY.get(var.name, var.name)
@@ -81,11 +52,7 @@ def _categories() -> list[str]:
 
 
 def _resolve_variables(requested: str | None) -> list[str]:
-    """Validate and resolve ``--variable`` from the CLI.
-
-    Raises :class:`SystemExit` (argparse-style) on an unknown category so
-    the operator sees an actionable error before any CDS request fires.
-    """
+    """Validate and resolve ``--variable`` from the cli."""
     if requested is None:
         return _categories()
     if requested not in _categories():
@@ -109,10 +76,7 @@ def _setup_logging(settings: Settings) -> logging.Logger:
 
 
 def _ensure_paths(settings: Settings) -> tuple[Path, Path]:
-    """Resolve and create the era5 directories. Returns
-    ``(storage_root, temp_dir)``. No manifest path — the manifest file
-    has been deleted along with :class:`ManifestManager`.
-    """
+    """Resolve and create the era5 directories."""
     storage_root = settings.era5_storage_root_resolved()
     logs_dir = settings.era5_logs_dir_resolved()
     temp_dir = storage_root / "tmp"
@@ -123,13 +87,7 @@ def _ensure_paths(settings: Settings) -> tuple[Path, Path]:
 
 
 def _build_downloader(settings: Settings) -> Downloader:
-    """Construct the production :class:`Downloader` with S3 wired in.
-
-    The CLI never needs a stub ``cds_client``; CDS auth happens lazily
-    inside the downloader when the real ``cdsapi.Client`` is created.
-    ``splitter`` and ``storage_port`` are always configured so that the
-    per-variable publish step runs on every iteration.
-    """
+    """Construct the production :class:`downloader` with s3 wired in."""
     storage_root, temp_dir = _ensure_paths(settings)
     files = FileService(storage_root=storage_root, temp_dir=temp_dir)
     splitter = DatasetSplitter()
@@ -144,9 +102,7 @@ def _build_downloader(settings: Settings) -> Downloader:
 
 
 def _recent_n_months(n: int) -> list[tuple[int, int]]:
-    """Return the last ``n`` (year, month) pairs ending with the current month,
-    in chronological order.
-    """
+    """Return the last ``n`` (year, month) pairs ending with the current month,."""
     today = date.today()
     months: list[tuple[int, int]] = []
     year, month = today.year, today.month
@@ -168,12 +124,7 @@ async def _ensure_one(
     month: int,
     logger: logging.Logger,
 ) -> DatasetHandle:
-    """Run a single ``ensure_dataset`` against a fresh repository session.
-
-    A fresh session per call matches the pipeline's semantics: each call
-    is an independent ``climate_assets`` write, and the surrounding code
-    never needs to reason about cross-call transaction boundaries.
-    """
+    """Run a single ``ensure_dataset`` against a fresh repository session."""
     async with async_session_maker() as session:
         repository: DatasetRepository = PostgresDatasetRepository(session)
         handle = await downloader.ensure_dataset(
@@ -199,12 +150,7 @@ async def _ensure_one(
 
 
 def _exists_for(storage_key: str) -> bool:
-    """Best-effort S3 existence probe used purely for log-line source tagging.
-
-    Returns ``True`` when the bucket reports the object; ``False`` on any
-    error so the log line falls back to ``"era5"``. Never raises — the
-    CLI tolerates S3 outages during logging.
-    """
+    """Best-effort s3 existence probe used purely for log-line source tagging."""
     try:
         return S3StorageAdapter().exists(storage_key)
     except Exception:  # noqa: BLE001
@@ -218,13 +164,7 @@ async def _run_periods(
     variables: list[str],
     logger: logging.Logger,
 ) -> dict[tuple[str, int, int], DatasetHandle]:
-    """Drive ``ensure_dataset`` across the cartesian product of
-    ``periods × variables`` sequentially.
-
-    Sequential (not ``asyncio.gather``) so a single runaway CDS request
-    cannot exhaust the connection pool; per-variable locking inside the
-    downloader still serialises concurrent first-writers safely.
-    """
+    """Drive ``ensure_dataset`` across the cartesian product of."""
     results: dict[tuple[str, int, int], DatasetHandle] = {}
     for variable in variables:
         for year, month in periods:
@@ -317,12 +257,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 async def _fetch_status_rows(
     variable: str | None,
 ) -> list[ClimateAsset]:
-    """Return every asset in the ``climate_assets`` table, optionally
-    filtered by ``variable``.
-
-    The query is intentionally a flat list — status is the operator's
-    "what do we have right now?" view and we do not need aggregation.
-    """
+    """Return every asset in the ``climate_assets`` table, optionally."""
     from infrastructure.db.climate_asset_model import ClimateAssetModel
 
     async with async_session_maker() as session:
@@ -359,12 +294,7 @@ async def _fetch_status_rows(
 
 
 async def _fetch_status_summary() -> dict[str, dict[str, int]]:
-    """Return a per-variable count of assets, used as the ``status``
-    header line.
-
-    Implemented as a single ``GROUP BY`` so the operator sees the total
-    inventory at a glance without loading every row.
-    """
+    """Return a per-variable count of assets, used as the ``status``."""
     from infrastructure.db.climate_asset_model import ClimateAssetModel
 
     async with async_session_maker() as session:
@@ -556,13 +486,7 @@ async def _run_precompute_one(
 
 
 def cmd_precompute(args: argparse.Namespace) -> int:
-    """Precompute a single ``(provider, variable, year, month)`` triple.
-
-    This is the vertical slice target called out by the user:
-    ``era5-land / precipitation / 2025-07``. The command will not
-    iterate over other months automatically; re-invoke with explicit
-    ``--year`` / ``--month`` for each period.
-    """
+    """Precompute a single ``(provider, variable, year, month)`` triple."""
     settings = get_settings()
     _setup_logging(settings)
     return asyncio.run(
@@ -577,12 +501,7 @@ def cmd_precompute(args: argparse.Namespace) -> int:
 
 
 async def _fetch_precompute_status() -> list[tuple[str, int, int, int]]:
-    """Return ``(provider, variable, year, month, row_count)`` rows.
-
-    Implemented as a single ``GROUP BY`` against
-    ``district_monthly_statistics``; the assets-side gap is reported
-    separately by joining against ``climate_assets``.
-    """
+    """Return ``(provider, variable, year, month, row_count)`` rows."""
     async with async_session_maker() as session:
         stmt = select(
             DistrictMonthlyStatisticsModel.provider,

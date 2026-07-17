@@ -1,19 +1,4 @@
-"""Process-level diagnostics: faulthandler, version logging, request ID context.
-
-DIAGNOSTIC ONLY — no behavioral change. This module exists solely to
-capture crash evidence. It does not add cancellation, locking,
-threading, or any other behavioral change to the request path.
-
-Call ``setup_diagnostics()`` as early as possible in process startup
-(before any native library imports). After that, route handlers call
-``request_context()`` to generate a request ID and propagate it via
-``contextvars``. Any code called from within the request's async task
-can read ``get_request_id()`` without any signature changes.
-
-All logs use the ``uvicorn.error`` logger so they appear alongside
-existing uvicorn output. A ``_flush()`` helper forces handler flushes
-after crash-adjacent log lines so they survive a native crash.
-"""
+"""System health and diagnostic tools: crash tracking, version logging, and request tracing."""
 from __future__ import annotations
 
 import asyncio
@@ -34,25 +19,18 @@ from typing import Iterator
 
 logger = logging.getLogger("uvicorn.error")
 
-# Module-level state set by setup_diagnostics(). Read by crash-evidence
-# capture scripts.
+# Where we store crash logs. Used by our troubleshooting scripts.
 _crash_log_path: Path | None = None
 _setup_done: bool = False
 
-# Propagates the request ID across await boundaries within a single
-# async task. Set by request_context(), read by get_request_id().
+# Keeps track of the unique ID for each request as it moves through the system.
 _request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "hydroatlas_request_id", default=None
 )
 
 
 def setup_diagnostics(crash_log_path: Path | None = None) -> Path:
-    """Enable faulthandler and emit startup diagnostics.
-
-    Must be called before any native library import (xarray, netCDF4,
-    rasterio) so faulthandler is installed before the first chance of
-    a native crash. Idempotent: subsequent calls are no-ops.
-    """
+    """Sets up crash tracking and logs some basic startup info."""
     global _crash_log_path, _setup_done
 
     if _setup_done:
@@ -134,9 +112,6 @@ def _log_startup_diagnostics() -> None:
 
 
 def _log_library_versions() -> None:
-    """Log versions of xarray, netCDF4, numpy, rasterio, rioxarray, and
-    the HDF5/netCDF C library versions exposed by the netCDF4 Python
-    bindings."""
     versions: dict[str, str] = {}
     for mod_name in ("xarray", "netCDF4", "numpy", "rasterio", "rioxarray"):
         try:
@@ -170,12 +145,7 @@ def _log_library_versions() -> None:
 
 
 def _log_process_resources() -> None:
-    """Log RSS and Windows handle count if psutil is available.
-
-    If psutil is not installed, log a single line indicating so. Do
-    NOT add psutil to requirements — this is read-only instrumentation
-    and adding dependencies is out of scope.
-    """
+    """Logs how much memory the server is using and how many files it has open."""
     try:
         import psutil  # type: ignore[import-not-found]
     except ImportError:
@@ -202,12 +172,7 @@ def _log_process_resources() -> None:
 
 @contextmanager
 def request_context(request_id: str | None = None) -> Iterator[str]:
-    """Set a request_id for the current async context.
-
-    Propagated via ``contextvars`` so it survives ``await`` boundaries
-    within the same task. No signature changes needed downstream —
-    any code called from within this context can read ``get_request_id()``.
-    """
+    """Sets a unique id for a request that stays with it as it's being processed."""
     if request_id is None:
         request_id = uuid.uuid4().hex[:12]
     token = _request_id_var.set(request_id)
@@ -223,17 +188,12 @@ def get_request_id() -> str:
 
 
 def get_crash_log_path() -> Path | None:
-    """Return the path of the active crash.log, or None if not set up."""
+    """Return the path of the active crash."""
     return _crash_log_path
 
 
 def flush() -> None:
-    """Flush all logging handlers, stderr, and stdout.
-
-    Called after crash-adjacent log lines so they survive a native
-    crash. Use sparingly — calling after every log line defeats
-    buffering.
-    """
+    """Flush all logging handlers, stderr, and stdout."""
     for handler in logging.getLogger().handlers:
         try:
             handler.flush()
@@ -247,28 +207,7 @@ def flush() -> None:
 
 
 def safe_log(level: int, msg: str, *args: object) -> None:
-    """Best-effort diagnostic log call.
-
-    Wraps ``logger.log(level, msg, *args)`` in a broad ``try/except``
-    so that any exception raised while formatting the log arguments
-    (e.g. an eager ``dict(xarray.DataArray.dims)`` that explodes when
-    ``dims`` is a tuple of strings instead of a key/value sequence)
-    or while writing to a handler cannot interrupt the surrounding
-    application code.
-
-    Scope is intentionally narrow: this helper is intended ONLY for
-    diagnostic-only log lines (RIO_CLIP_*, NUMPY_AGGREGATE_*,
-    VARIABLE_SELECT_*, DATASET_*, ASSET_*, resource snapshots, etc.).
-    Do NOT route application-level logging through this helper — in
-    particular, REQUEST_ERROR unhandled-exception handlers and any
-    log line that the operator relies on to diagnose real failures
-    must still surface normally.
-
-    The exception is intentionally swallowed (no fallback log) so
-    that a misbehaving diagnostic cannot itself change observable
-    request behaviour. If formatting fails we simply lose that one
-    diagnostic line; the application continues.
-    """
+    """A 'safer' way to log diagnostic info that won't break the app."""
     try:
         logger.log(level, msg, *args)
     except Exception:  # noqa: BLE001
@@ -277,8 +216,7 @@ def safe_log(level: int, msg: str, *args: object) -> None:
 
 
 def runtime_library_versions() -> dict[str, str]:
-    """Return installed versions of every library involved in the
-    raster-open path, serialised as a flat dict."""
+    """Return installed versions of every library involved in the."""
     versions: dict[str, str] = {}
     versions["python"] = platform.python_version()
     try:
@@ -340,14 +278,7 @@ _lifecycle_log_lock: threading.Lock = threading.Lock()
 
 
 def setup_lifecycle_log(path: Path | None = None) -> Path:
-    """Configure the persistent NATIVE_* event sink.
-
-    Appends to ``backend/native_lifecycle.log`` by default. Diagnostic
-    sink failures are swallowed; if the file cannot be opened, a
-    warning is logged to the regular uvicorn logger and the function
-    continues. Idempotent: subsequent calls update the path only if
-    not already configured.
-    """
+    """Configure the persistent native_* event sink."""
     global _lifecycle_log_path
     if path is None:
         path = (Path(__file__).resolve().parent.parent / "native_lifecycle.log")
@@ -377,12 +308,12 @@ def setup_lifecycle_log(path: Path | None = None) -> Path:
 
 
 def get_lifecycle_log_path() -> Path | None:
-    """Return the configured lifecycle-log path, or ``None``."""
+    """Return the configured lifecycle-log path, or ``none``."""
     return _lifecycle_log_path
 
 
 def _safe_call(fn: object, *args: object) -> object:
-    """Invoke ``fn(*args)`` and return its result, or ``None`` on error."""
+    """Invoke ``fn(*args)`` and return its result, or ``none`` on error."""
     try:
         return fn(*args)  # type: ignore[call-arg]
     except Exception:  # noqa: BLE001
@@ -399,11 +330,7 @@ def _safe_int(value: object) -> int | None:
 
 
 def _read_file_cache_occupancy() -> int | None:
-    """Return ``len(xarray.backends.file_manager.FILE_CACHE)``.
-
-    Read-only. Never raises. Returns ``None`` if the cache or its
-    ``__len__`` is unavailable.
-    """
+    """Return ``len(xarray."""
     try:
         from xarray.backends.file_manager import FILE_CACHE
         return len(FILE_CACHE)
@@ -412,12 +339,7 @@ def _read_file_cache_occupancy() -> int | None:
 
 
 def _read_rss_bytes() -> int | None:
-    """Return process RSS in bytes.
-
-    Uses ``psutil`` if installed (no dependency added by this module).
-    Falls back to ``resource.getrusage`` on POSIX. Returns ``None`` on
-    Windows without psutil because no clean stdlib RSS accessor exists.
-    """
+    """Return process rss in bytes."""
     try:
         import psutil  # type: ignore[import-not-found]
         return int(psutil.Process(os.getpid()).memory_info().rss)
@@ -442,12 +364,7 @@ def _read_rss_bytes() -> int | None:
 
 
 def _read_windows_handle_count() -> int | None:
-    """Return the Windows process handle count.
-
-    Uses ``psutil`` if installed; otherwise calls
-    ``kernel32.GetProcessHandleCount`` via ``ctypes`` on Windows.
-    Returns ``None`` on non-Windows platforms or any failure.
-    """
+    """Return the windows process handle count."""
     try:
         import psutil  # type: ignore[import-not-found]
         return int(psutil.Process(os.getpid()).num_handles())
@@ -474,10 +391,7 @@ def _read_windows_handle_count() -> int | None:
 
 
 def _read_gc_counts() -> tuple[int, int, int] | None:
-    """Return ``gc.get_count()`` as a 3-tuple, or ``None`` on failure.
-
-    Never triggers ``gc.collect()``.
-    """
+    """Return ``gc."""
     try:
         counts = gc.get_count()
         return (int(counts[0]), int(counts[1]), int(counts[2]))
@@ -486,7 +400,7 @@ def _read_gc_counts() -> tuple[int, int, int] | None:
 
 
 def _read_current_task_id() -> int | None:
-    """Return ``id(asyncio.current_task())`` if available, else ``None``."""
+    """Return ``id(asyncio."""
     try:
         return id(asyncio.current_task())
     except Exception:  # noqa: BLE001
@@ -494,11 +408,7 @@ def _read_current_task_id() -> int | None:
 
 
 def _read_live_handle_counts(cache_key: object | None) -> tuple[int | None, int | None]:
-    """Return ``(global_live, same_key_live)`` from ``raster_cache``.
-
-    Lazy-imported to avoid circular imports. Returns ``(None, None)``
-    on any error.
-    """
+    """Return ``(global_live, same_key_live)`` from ``raster_cache``."""
     try:
         from application.raster_cache import (
             _global_live_handle_count,
@@ -523,14 +433,7 @@ def _capture_lifecycle_snapshot(
     cache_key: object | None = None,
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Build the structured NATIVE_* snapshot dict.
-
-    Every metric is best-effort. The function never raises; on any
-    internal failure the affected metric is set to ``None``. The dict
-    is intentionally JSON-incompatible in places (e.g. cache_key is a
-    tuple) because the values are formatted for human/grep consumption,
-    not for machine parse.
-    """
+    """Build the structured native_* snapshot dict."""
     try:
         global_live, same_key_live = _read_live_handle_counts(cache_key)
         snapshot: dict[str, object] = {
@@ -564,14 +467,7 @@ def _capture_lifecycle_snapshot(
 
 
 def _format_snapshot_line(snapshot: dict[str, object]) -> str:
-    """Render ``snapshot`` as a single ``k=v k=v ...`` line.
-
-    Values that contain spaces or ``=`` characters are wrapped in
-    double quotes; double quotes inside values are escaped. Tuple
-    values (e.g. ``cache_key``, ``gc_counts``) are rendered as
-    ``(a, b, c, d)`` for grep-ability. ``None`` values render as
-    ``null``. Non-string scalars are ``str()``-formatted.
-    """
+    """Render ``snapshot`` as a single ``k=v k=v ."""
     parts: list[str] = []
     for k, v in snapshot.items():
         if v is None:
@@ -591,7 +487,7 @@ def _format_snapshot_line(snapshot: dict[str, object]) -> str:
 
 
 def _append_lifecycle_log(line: str) -> None:
-    """Append one line to the persistent sink. Best-effort."""
+    """Append one line to the persistent sink."""
     if _lifecycle_log_path is None:
         return
     try:
@@ -615,12 +511,7 @@ def emit_native_event(
     cache_key: object | None = None,
     extra: dict[str, object] | None = None,
 ) -> None:
-    """Emit a NATIVE_* event with a full snapshot.
-
-    Writes one structured line to both the regular uvicorn logger
-    (so it appears alongside existing logs) and to the persistent
-    sink (so it survives ``0xC0000005``). Never raises.
-    """
+    """Emit a native_* event with a full snapshot."""
     try:
         snapshot = _capture_lifecycle_snapshot(
             event=event, file_path=file_path, cache_key=cache_key, extra=extra,

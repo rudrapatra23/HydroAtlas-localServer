@@ -1,23 +1,3 @@
-"""Precompute service — opens each monthly variable raster once and
-fills ``district_monthly_statistics`` for every GADM district.
-
-The service is the write-side of the precompute pipeline; production
-endpoints continue to use the on-demand
-:class:`~application.raster_computation.RasterComputation` path unchanged.
-
-Reuse rules:
-- Geometry / statistics logic is delegated to
-  :class:`application.raster_computation.RasterComputation` verbatim so
-  the precomputed numbers are byte-comparable to the on-demand numbers
-  (same NaN mask, same ``np.mean / np.min / np.max`` calls).
-- Asset lookup is delegated to
-  :class:`~infrastructure.repositories.postgres_dataset_repository.PostgresDatasetRepository`
-  so the source-of-truth invariant ("PostgreSQL ``climate_assets``
-  names the raster we want") is preserved.
-- The S3 download, NetCDF open, and CRS assignment are inlined here
-  so the timing instrumentation can split S3-read from dataset-open.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 from pathlib import Path
-import tempfile  # noqa: F401  -- kept for back-compat; precompute path no longer uses OS tempfiles directly.
+import tempfile  
 import time
 import tracemalloc
 from typing import Sequence
@@ -52,12 +32,7 @@ logger = logging.getLogger("ingestion.era5.precompute")
 
 @dataclass(frozen=True)
 class PrecomputeTimings:
-    """Wall-time and memory measurements for one precompute invocation.
-
-    All values are populated by :class:`PrecomputeService.precompute_one`.
-    They are surfaced as the JSON-shaped log payload on completion and
-    also returned to the CLI for printing.
-    """
+    """Wall-time and memory measurements for one precompute invocation."""
 
     s3_read_seconds: float
     dataset_open_seconds: float
@@ -78,17 +53,7 @@ class PrecomputeResult:
 
 
 class PrecomputeService:
-    """Compute-and-write service for the ``district_monthly_statistics`` table.
-
-    Takes an async-session factory, a storage port, and an existing
-    :class:`RasterComputation` (the same instance used by the routers).
-
-    Why a factory rather than a single session: the long clipping loop
-    would otherwise hold an asyncpg connection idle for several minutes,
-    and the connection reaper closes idle connections before the
-    subsequent upsert. Opening a fresh session per upsert batch keeps
-    each connection warm for the duration of its single statement.
-    """
+    """This service handles the heavy lifting of pre-calculating statistics."""
 
     def __init__(
         self,
@@ -112,9 +77,7 @@ class PrecomputeService:
         year: int,
         month: int,
     ) -> PrecomputeResult:
-        """Resolve the asset, read the raster once, clip every district,
-        bulk-upsert the resulting rows. One transaction; one NetCDF open.
-        """
+        """Resolve the asset, read the raster once, clip every district,."""
         tracemalloc.start()
         t_total_start = time.perf_counter()
 

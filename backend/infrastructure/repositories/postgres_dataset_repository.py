@@ -134,12 +134,7 @@ class PostgresDatasetRepository(DatasetRepository):
         provider: str,
         variable: str,
     ) -> Sequence[ClimateAsset]:
-        """Return every asset in the inclusive ``[start, end]`` month range.
-
-        Uses a tuple comparison on ``(year, month)`` so the database can
-        satisfy the range with a single index scan. Results are ordered
-        ascending so the caller iterates the time series sequentially.
-        """
+        """Return every asset in the inclusive ``[start, end]`` month range."""
         period_column = tuple_(ClimateAssetModel.year, ClimateAssetModel.month)
         stmt = (
             select(ClimateAssetModel)
@@ -190,10 +185,7 @@ class PostgresDatasetRepository(DatasetRepository):
     async def get_available_range(
         self, provider: str, variable: str
     ) -> tuple[int, int, int, int] | None:
-        """Return ``(min_year, min_month, max_year, max_month)`` in a
-        single aggregate query so the router can validate incoming
-        month-range requests without scanning every asset row.
-        """
+        """Return ``(min_year, min_month, max_year, max_month)`` in a."""
         stmt = select(
             func.min(ClimateAssetModel.year),
             func.min(ClimateAssetModel.month),

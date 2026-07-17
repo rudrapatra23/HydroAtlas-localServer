@@ -13,14 +13,14 @@ router = APIRouter(prefix="/boundaries", tags=["boundaries"])
 
 @router.get("/states")
 def list_states() -> Sequence[dict]:
-    """List all Indian states/UTs from GADM ADM_1 layer."""
+    """Get a list of all states and union territories in India."""
     gdf = get_adm1()
     return gdf[["GID_1", "NAME_1"]].rename(columns={"GID_1": "state_id", "NAME_1": "name"}).to_dict(orient="records")
 
 
 @router.get("/states/{state_id}/districts")
 def list_districts_for_state(state_id: str) -> Sequence[dict]:
-    """List districts for a given state/UT from GADM ADM_2 layer."""
+    """Find all the districts that belong to a specific state or union territory."""
     adm2 = get_adm2()
     state_districts = adm2[adm2["GID_1"] == state_id]
     if state_districts.empty:
@@ -32,7 +32,7 @@ def list_districts_for_state(state_id: str) -> Sequence[dict]:
 
 @router.get("/states/{state_id}/districts/geojson")
 def get_state_districts_geojson(state_id: str) -> dict:
-    """GeoJSON FeatureCollection for districts in a given state/UT (original GADM geometry)."""
+    """Get the geographic shapes of all districts in a state, formatted as a GeoJSON FeatureCollection."""
     adm2 = get_adm2()
     state_districts = adm2[adm2["GID_1"] == state_id]
     if state_districts.empty:

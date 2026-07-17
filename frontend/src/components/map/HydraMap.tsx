@@ -8,8 +8,10 @@ import { monthStringToYearMonth, useAppStore } from "../../stores/useAppStore";
 import {
   DistrictRasterClipResponse,
   getDistrictRasterClip,
+  getDistrictRasterClipRange,
   getDistrictsGeojson,
 } from "../../api/boundaries";
+
 import { getDisplayUnit, toDisplayValue } from "../../stores/districtDataStore";
 
 const DISTRICT_SOURCE_ID = "districts";
@@ -48,14 +50,19 @@ const lightBasemapStyle: StyleSpecification = {
 };
 
 const VARIABLE_COLOR_STOPS = {
-  precipitation: ["#DBEAFE", "#7DD3FC", "#0EA5E9", "#075985"],
-  soil_moisture: ["#F0FDF4", "#86EFAC", "#16A34A", "#14532D"],
-  surface_runoff: ["#FFF7ED", "#FDBA74", "#EA580C", "#9A3412"],
+  precipitation: ["#BAE6FD", "#38BDF8", "#0284C7", "#082F49"],
+  soil_moisture: ["#BBF7D0", "#4ADE80", "#16A34A", "#064E3B"],
+  surface_runoff: ["#FED7AA", "#FB923C", "#EA580C", "#7C2D12"],
 } as const;
 
 function formatLegendValue(value: number): string {
   if (!Number.isFinite(value)) return "n/a";
   return value.toFixed(Math.abs(value) >= 100 ? 0 : 1);
+}
+
+function formatMonthLabel(result: DistrictRasterClipResponse | undefined): string {
+  if (!result) return "";
+  return `${result.year}-${String(result.month).padStart(2, "0")}`;
 }
 
 function HydraMap() {
@@ -65,6 +72,7 @@ function HydraMap() {
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
   const selectedVariable = useAppStore((state) => state.selectedVariable);
   const endMonth = useAppStore((state) => state.endMonth);
+  const startMonth = useAppStore((state) => state.startMonth);
   const rasterLayerEnabled = useAppStore((state) => {
     if (state.selectedVariable === "precipitation") return state.layers.rainfall.enabled;
     if (state.selectedVariable === "soil_moisture") return state.layers["soil-moisture"].enabled;
@@ -81,8 +89,13 @@ function HydraMap() {
     selectedStateIdRef.current = selectedStateId;
   }, [selectedStateId]);
 
-  const [boundaryLoading, setBoundaryLoading] = useState(false);
-  const [rasterLoading, setRasterLoading] = useState(false);
+  // Holds every month's clipped result when the user picks a multi-month
+  // range. Empty for single-month selections (we don't need a scrubber
+  // for one month).
+  const [rangeResults, setRangeResults] = useState<DistrictRasterClipResponse[]>([]);
+  const [activeMonthIndex, setActiveMonthIndex] = useState(0);
+  const [, setBoundaryLoading] = useState(false);
+  const [, setRasterLoading] = useState(false);
   const [legendState, setLegendState] = useState<{
     label: string;
     min: number;
@@ -97,12 +110,18 @@ function HydraMap() {
     [],
   );
 
-  const activeRasterMonth = useMemo(
-    () => monthStringToYearMonth(endMonth),
-    [endMonth],
-  );
-
-  const mapLoading = boundaryLoading || rasterLoading;
+  /**
+   * Resolved date range for the raster fetch.
+   * Both start and end must parse correctly before any fetch is issued.
+   * When start === end the range is a single month and we use the
+   * cheaper /raster-clip endpoint; otherwise /raster-clip-range.
+   */
+  const rasterDateRange = useMemo(() => {
+    const s = monthStringToYearMonth(startMonth);
+    const e = monthStringToYearMonth(endMonth);
+    if (!s || !e) return null;
+    return { start: s, end: e, startStr: startMonth, endStr: endMonth };
+  }, [startMonth, endMonth]);
 
   function setRasterData(
     mapInstance: MapLibreMap,
@@ -161,7 +180,7 @@ function HydraMap() {
     mapInstance.setPaintProperty(
       DISTRICT_RASTER_FILL_LAYER_ID,
       "fill-opacity",
-      ["case", ["has", "display_value"], 0.42, 0],
+      ["case", ["has", "display_value"], 0.62, 0],
     );
   }
 
@@ -178,6 +197,35 @@ function HydraMap() {
       p75: toDisplayValue(selectedVariable, response.summary.p75),
       max: toDisplayValue(selectedVariable, response.summary.max),
     });
+  }
+
+  // Renders one month's result onto the map and updates the legend.
+  // Shared by both the initial fetch and the scrubber, so dragging the
+  // slider and loading a fresh range behave identically.
+  function showResultOnMap(mapInstance: MapLibreMap, result: DistrictRasterClipResponse) {
+    districtRasterRef.current = result;
+    setRasterData(mapInstance, result);
+    setRasterPaint(mapInstance, result);
+    setRasterLegend(result);
+  }
+
+  function clearRasterFromMap(mapInstance: MapLibreMap) {
+    districtRasterRef.current = null;
+    setRangeResults([]);
+    setActiveMonthIndex(0);
+    setRasterData(mapInstance, null);
+    setRasterPaint(mapInstance, null);
+    setRasterLegend(null);
+  }
+
+  // Lets the user scrub through already-fetched months without
+  // refetching anything from the backend.
+  function handleMonthIndexChange(index: number) {
+    const map = mapRef.current;
+    const result = rangeResults[index];
+    if (!map || !result) return;
+    setActiveMonthIndex(index);
+    showResultOnMap(map, result);
   }
 
   useEffect(() => {
@@ -233,8 +281,8 @@ function HydraMap() {
         source: DISTRICT_RASTER_SOURCE_ID,
         paint: {
           "line-color": "#0F172A",
-          "line-width": 0.25,
-          "line-opacity": 0.18,
+          "line-width": 0.1,
+          "line-opacity": 0.15,
         },
       });
 
@@ -288,8 +336,8 @@ function HydraMap() {
         filter: ["==", ["get", "district_id"], ""],
         paint: {
           "line-color": "#0F172A",
-          "line-width": 2.2,
-          "line-opacity": 1,
+          "line-width": 1.5,
+          "line-opacity": 0.9,
         },
       });
     });
@@ -323,11 +371,18 @@ function HydraMap() {
 
     let cancelled = false;
     setBoundaryLoading(true);
+    const loadingToken = useAppStore.getState().beginLoading(
+      "Fetching district boundaries",
+      "map",
+    );
 
     async function run(mapInstance: MapLibreMap) {
       const source = mapInstance.getSource(DISTRICT_SOURCE_ID) as any;
       if (!source) {
-        if (!cancelled) setBoundaryLoading(false);
+        if (!cancelled) {
+          setBoundaryLoading(false);
+          useAppStore.getState().endLoading(loadingToken);
+        }
         return;
       }
 
@@ -337,6 +392,7 @@ function HydraMap() {
         geojsonLoadedForStateRef.current = null;
         source.setData(emptyFeatureCollection as any);
         setBoundaryLoading(false);
+        useAppStore.getState().endLoading(loadingToken);
         return;
       }
 
@@ -354,21 +410,24 @@ function HydraMap() {
           geojsonLoadedForStateRef.current = null;
           source.setData(emptyFeatureCollection as any);
           setBoundaryLoading(false);
+          useAppStore.getState().endLoading(loadingToken);
           return;
         }
       }
 
       setBoundaryLoading(false);
+      useAppStore.getState().endLoading(loadingToken);
     }
 
     if (map.isStyleLoaded()) {
       run(map);
     } else {
-      map.once("load", () => run(map));
+      map.once('load', () => run(map));
     }
 
     return () => {
       cancelled = true;
+      useAppStore.getState().endLoading(loadingToken);
     };
   }, [emptyFeatureCollection, selectedStateId]);
 
@@ -377,58 +436,104 @@ function HydraMap() {
     if (!map) return;
 
     let cancelled = false;
+    // Reset the scrubber immediately so the slider always reflects the
+    // pending fetch, even when the new range has the same length as the
+    // old one (which would make setActiveMonthIndex(lastIndex) a no-op
+    // if React bails out of the update because the value didn't change).
+    setRangeResults([]);
+    setActiveMonthIndex(0);
     setRasterLoading(true);
+    const loadingToken = useAppStore.getState().beginLoading(
+      "Fetching ERA5-Land raster from S3",
+      "map",
+    );
 
     async function run(mapInstance: MapLibreMap) {
       if (!mapInstance.getSource(DISTRICT_RASTER_SOURCE_ID)) {
-        if (!cancelled) setRasterLoading(false);
+        if (!cancelled) {
+          setRasterLoading(false);
+          useAppStore.getState().endLoading(loadingToken);
+        }
         return;
       }
 
-      if (!selectedDistrictId || !activeRasterMonth || !rasterLayerEnabled) {
-        districtRasterRef.current = null;
-        setRasterData(mapInstance, null);
-        setRasterPaint(mapInstance, null);
-        setRasterLegend(null);
-        if (!cancelled) setRasterLoading(false);
+      if (!selectedDistrictId || !rasterDateRange || !rasterLayerEnabled) {
+        if (!cancelled) clearRasterFromMap(mapInstance);
+        if (!cancelled) {
+          setRasterLoading(false);
+          useAppStore.getState().endLoading(loadingToken);
+        }
         return;
       }
 
       try {
-        const response = await getDistrictRasterClip(selectedDistrictId, {
-          year: activeRasterMonth.year,
-          month: activeRasterMonth.month,
-          variable: selectedVariable,
-        });
-        if (cancelled) return;
-        districtRasterRef.current = response;
-        setRasterData(mapInstance, response);
-        setRasterPaint(mapInstance, response);
-        setRasterLegend(response);
+        const { start, end, startStr, endStr } = rasterDateRange;
+        const isSingleMonth =
+          start.year === end.year && start.month === end.month;
+
+        if (isSingleMonth) {
+          useAppStore.getState().updateLoading(
+            loadingToken,
+            "Clipping raster to district boundary",
+          );
+          const response = await getDistrictRasterClip(selectedDistrictId, {
+            year: end.year,
+            month: end.month,
+            variable: selectedVariable,
+          });
+          if (cancelled) return;
+          useAppStore.getState().updateLoading(loadingToken, "Rendering raster layer");
+          setRangeResults([]);
+          setActiveMonthIndex(0);
+          showResultOnMap(mapInstance, response);
+        } else {
+          useAppStore.getState().updateLoading(
+            loadingToken,
+            "Clipping raster across date range",
+          );
+          const response = await getDistrictRasterClipRange(selectedDistrictId, {
+            start: startStr,
+            end: endStr,
+            variable: selectedVariable,
+          });
+          if (cancelled) return;
+
+          const results = response.results;
+          if (results.length === 0) {
+            clearRasterFromMap(mapInstance);
+            return;
+          }
+
+          useAppStore.getState().updateLoading(loadingToken, "Rendering raster layer");
+          setRangeResults(results);
+          const lastIndex = results.length - 1;
+          setActiveMonthIndex(lastIndex);
+          showResultOnMap(mapInstance, results[lastIndex]);
+        }
       } catch (error) {
         if (cancelled) return;
-        districtRasterRef.current = null;
-        setRasterData(mapInstance, null);
-        setRasterPaint(mapInstance, null);
-        setRasterLegend(null);
+        clearRasterFromMap(mapInstance);
       } finally {
-        if (!cancelled) setRasterLoading(false);
+        if (!cancelled) {
+          setRasterLoading(false);
+          useAppStore.getState().endLoading(loadingToken);
+        }
       }
     }
 
     if (map.isStyleLoaded()) {
       run(map);
     } else {
-      map.once("load", () => run(map));
+      map.once('load', () => run(map));
     }
 
     return () => {
       cancelled = true;
+      useAppStore.getState().endLoading(loadingToken);
     };
-    // The district raster endpoint is a single-month slice. The
-    // current explorer exposes an inclusive range, so the map uses the
-    // selected end-month as the active snapshot.
-  }, [activeRasterMonth, rasterLayerEnabled, selectedDistrictId, selectedVariable]);
+    // Re-run whenever the district, variable, layer toggle, or either
+    // date-range bound changes so the raster stays in sync.
+  }, [rasterDateRange, rasterLayerEnabled, selectedDistrictId, selectedVariable]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -486,18 +591,25 @@ function HydraMap() {
     <div className="absolute inset-0 z-0 overflow-hidden">
       <div ref={mapContainerRef} className="h-full w-full" />
 
-      {mapLoading && (
-        <div className="absolute bottom-4 left-4 z-10 pointer-events-none">
-          <div
-            className="flex items-center gap-1.5 rounded-full bg-slate-900/80 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm backdrop-blur-sm"
-            role="status"
-            aria-live="polite"
-          >
-            <span
-              className="inline-block h-3 w-3 animate-spin rounded-full border border-white/40 border-t-white"
-              aria-hidden="true"
+      {rangeResults.length > 1 && selectedDistrictId && rasterLayerEnabled && (
+        <div className="absolute top-4 left-1/2 z-10 -translate-x-1/2">
+          <div className="flex items-center gap-3 rounded-md border border-slate-200 bg-white/95 px-4 py-2.5 shadow-sm backdrop-blur-sm">
+            <span className="whitespace-nowrap text-[11px] font-medium text-slate-700">
+              {formatMonthLabel(rangeResults[activeMonthIndex])}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={rangeResults.length - 1}
+              step={1}
+              value={activeMonthIndex}
+              onChange={(e) => handleMonthIndexChange(Number(e.target.value))}
+              className="w-40 white-thumb-slider"
+              style={{
+                background: `linear-gradient(to right, #0ea5e9 ${(activeMonthIndex / Math.max(1, rangeResults.length - 1)) * 100}%, #e2e8f0 ${(activeMonthIndex / Math.max(1, rangeResults.length - 1)) * 100}%)`
+              }}
+              aria-label="Select month within range"
             />
-            Updating…
           </div>
         </div>
       )}

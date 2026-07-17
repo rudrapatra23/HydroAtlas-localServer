@@ -1,36 +1,4 @@
-"""Process-level raster acquisition cache.
-
-This module is the single runtime acquisition layer for ERA5-Land
-NetCDF tiles read by :class:`~application.raster_computation.RasterComputation`
-and :class:`~application.precompute_service.PrecomputeService`.
-
-Guarantees (verified by ``tests/test_raster_cache.py``):
-
-- PostgreSQL ``climate_assets`` is the source of truth for dataset
-  existence; this module never contacts CDS.
-- A given ``(provider, variable, year, month)`` raster is downloaded at
-  most once per concurrent burst; later callers reuse the cached file.
-- The local cache file is validated against ``asset.checksum`` (sha256)
-  on every read via a cheap head-64KB fingerprint sidecar. Drift
-  triggers a transparent re-download from S3.
-- Cache writes are atomic (``os.replace`` from a ``.partial`` sibling);
-  a half-written file is never exposed as a valid cache entry.
-- Total cache size is bounded by ``Settings.raster_cache_max_bytes``
-  (default 2 GiB, env-driven); an atime-based LRU sweep evicts oldest
-  files first when over budget and never evicts a file held by an
-  outstanding :class:`RasterLease`.
-- ``max_bytes = 0`` disables the on-disk cache entirely: every acquire
-  downloads into a temporary file whose lifetime is bound to the active
-  leases.
-- The per-key single-flight lock registry is bounded at 4096 entries
-  with LRU eviction, so memory cannot grow without bound across
-  long-running processes.
-
-Each caller opens its own ``xr.Dataset`` handle from the lease's
-``path`` and closes it normally. This module never holds an open
-NetCDF file handle beyond the acquisition phase, and never shares
-the opened ``Dataset`` object across callers.
-"""
+"""A smart cache for our climate data files."""
 
 from __future__ import annotations
 from application.native_io_lock import NATIVE_IO_LOCK
@@ -103,14 +71,7 @@ DEFAULT_RASTER_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 
 @dataclass
 class RasterLease:
-    """Handle returned by :meth:`RasterCache.acquire`.
-
-    The caller MUST eventually call :meth:`release` (or use
-    :meth:`RasterCache.leased` as an async context manager) so the
-    underlying file is no longer protected from eviction and any
-    ephemeral state (the tempfile when ``max_bytes == 0``) is cleaned
-    up. Releasing twice is a no-op.
-    """
+    """A 'lease' on a data file that prevents it from being deleted."""
 
     path: Path
     cache_hit: bool
@@ -139,19 +100,7 @@ class RasterLease:
 
 @dataclass
 class OpenRasterHandle:
-    """Bundles the opened dataset, cache path, and lease as one ownership unit.
-
-    The three fields must be released together: ``dataset`` is the live
-    ``xr.Dataset``/``xr.DataArray`` holding a file handle on ``path``;
-    ``lease`` is the :class:`RasterLease` keeping ``path`` out of the
-    eviction sweep.
-
-    ``close()`` runs ``dataset.close()`` first and then ``lease.release()``;
-    each step is individually try/except'd so a failure in one does not
-    skip the other. The handle is also an async context manager. A
-    ``__del__`` safety net closes the handle if it is garbage-collected
-    without explicit cleanup.
-    """
+    """A helper that bundles an open data file with its cache lease."""
 
     dataset: xr.Dataset | xr.DataArray
     path: Path
@@ -160,30 +109,11 @@ class OpenRasterHandle:
     _closed: bool = False
 
     def __post_init__(self) -> None:
-        """Register this handle in the global live-handle registry.
-
-        ``__post_init__`` is called by ``dataclasses`` after ``__init__``
-        returns. We assign a unique ``handle_id`` here (before ``close()``
-        can be called) and log the open event. All mutations are
-        guarded by ``_live_handle_lock``.
-
-        The registration is never undone outside ``close()``; if
-        ``close()`` is never called, ``__del__`` will release it.
-        """
+        """Register this handle in the global live-handle registry."""
         _register_handle(self)
 
     async def aclose(self) -> None:
-        """Close the dataset and release the lease under the per-key I/O lock.
-
-        Order matters: dataset.close() FIRST (so the netCDF file
-        handle is dropped before the lease is released), then
-        lease.release() (so the cache file becomes eviction-eligible
-        once nothing else can be reading it).
-
-        Emits a structured ``DATASET_CLOSE`` log line so operators can
-        correlate an open with its corresponding close and detect
-        leaked handles (an open without a matching close is a leak).
-        """
+        """Close the dataset and release the lease under the per-key i/o lock."""
         key = self.lease._key
         lock = _dataset_io_lock_registry.get_or_create(key)
         await lock.acquire()
@@ -324,10 +254,7 @@ def _safe_segment(value: str, kind: str) -> str:
 
 
 def cache_path_for(cache_root: Path, asset: ClimateAsset) -> Path:
-    """Resolve the canonical cache path for ``asset``.
-
-    Layout: ``{cache_root}/{provider}/{variable}/{YYYY}/{MM}.nc``.
-    """
+    """Resolve the canonical cache path for ``asset``."""
     provider_seg = _safe_segment(asset.provider, "provider")
     variable_seg = _safe_segment(asset.variable, "variable")
     relative = Path(
@@ -361,13 +288,7 @@ _global_live_handle_count: int = 0
 
 
 def _register_handle(handle: OpenRasterHandle) -> None:
-    """Register a newly-created ``OpenRasterHandle`` in the live-handle
-    registry. Generates a unique ``handle_id``, increments per-key and
-    global counts, and logs the open event via ``safe_log``.
-
-    Called from ``OpenRasterHandle.__post_init__``. All mutations are
-    guarded by ``_live_handle_lock`` and always released in ``finally``.
-    """
+    """Register a newly-created ``openrasterhandle`` in the live-handle."""
     global _global_live_handle_count
     with _live_handle_lock:
         try:
@@ -390,11 +311,7 @@ def _register_handle(handle: OpenRasterHandle) -> None:
 
 
 def _unregister_handle(handle: OpenRasterHandle) -> None:
-    """Remove a closed ``OpenRasterHandle`` from the live-handle registry.
-    Decrements per-key and global counts, logs the close event.
-
-    Called from ``OpenRasterHandle.close()`` after ``lease.release()``
-    in a ``finally`` block.``"""
+    """Remove a closed ``openrasterhandle`` from the live-handle registry."""
     global _global_live_handle_count
     with _live_handle_lock:
         try:
@@ -422,22 +339,7 @@ def _unregister_handle(handle: OpenRasterHandle) -> None:
 
 
 class _LockRegistry:
-    """Per-key ``asyncio.Lock`` factory, bounded with LRU eviction.
-
-    Each entry is keyed by ``(cache_key, event_loop_id)`` so a lock is
-    never reused across event-loop lifetimes. ``asyncio.run()`` in the
-    CLI creates a new loop per invocation; pytest-asyncio's default
-    mode creates a fresh loop per test function. Without per-loop
-    keys, a cached lock from a closed loop would raise
-    ``RuntimeError: ... is bound to a different event loop`` on the
-    next call from a new loop.
-
-    The dict is bounded at ``_MAX_LOCK_REGISTRY_ENTRIES`` with LRU
-    eviction of the *uncontended* lock at the front. Locks whose loops
-    have been closed become unreachable when the loop is GC'd, so the
-    bound prevents unbounded growth in long-running processes that
-    cycle loops frequently.
-    """
+    """Per-key ``asyncio."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -472,12 +374,7 @@ _lock_registry = _LockRegistry()
 
 
 def _current_loop_id() -> int:
-    """Return the id of the currently running event loop, or 0 if none.
-
-    ``id(loop)`` is stable for the loop's lifetime and is safe to use
-    as a dict key. ``0`` is reserved for the no-loop case. Module-level
-    (not a method) because it does not use class or instance state.
-    """
+    """Return the id of the currently running event loop, or 0 if none."""
     try:
         return id(asyncio.get_running_loop())
     except RuntimeError:
@@ -493,14 +390,7 @@ _dataset_io_lock_registry = _LockRegistry()
 
 
 class _OpenCounter:
-    """Module-level per-key counter of currently in-flight ``open_dataset``
-    calls.
-
-    Used by the structured ``OPEN_DATASET`` log line so operators can
-    see how many concurrent readers a given raster had when an open
-    completed. Also exported as ``active_open_counts()`` for the
-    regression test.
-    """
+    """Module-level per-key counter of currently in-flight ``open_dataset``."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -536,14 +426,7 @@ _open_counter = _OpenCounter()
 
 
 class _LeaseRegistry:
-    """Per-key reference counter for outstanding leases.
-
-    The eviction sweep consults :meth:`active_keys` and refuses to
-    unlink any cache file whose key has an outstanding lease. When the
-    last lease for a key is released, the key is removed from the
-    active set; if the lease was ephemeral (``max_bytes == 0``) the
-    corresponding tempfile is unlinked.
-    """
+    """Per-key reference counter for outstanding leases."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -585,11 +468,7 @@ _lease_registry = _LeaseRegistry()
 
 
 def _reconstruct_key(root: Path, p: Path) -> CacheKey | None:
-    """Inverse of ``cache_path_for``: turn a path back into a key.
-
-    Returns ``None`` for any file that does not match the canonical
-    layout — such files are simply skipped by the eviction sweep.
-    """
+    """Inverse of ``cache_path_for``: turn a path back into a key."""
     try:
         rel = p.relative_to(root)
     except ValueError:
@@ -610,11 +489,7 @@ def _reconstruct_key(root: Path, p: Path) -> CacheKey | None:
 def _cache_size_bytes(
     root: Path, skip_keys: set[CacheKey]
 ) -> tuple[int, list[tuple[float, int, Path]]]:
-    """Return ``(total_bytes, [(atime, size, path), ...])`` for every
-    ``*.nc`` under ``root``. Files whose key is in ``skip_keys`` (held
-    by an outstanding lease) are excluded. ``.partial`` and ``.fp``
-    siblings are always skipped.
-    """
+    """Return ``(total_bytes, [(atime, size, path), ."""
     files: list[tuple[float, int, Path]] = []
     total = 0
     if not root.exists():
@@ -642,12 +517,7 @@ def _maybe_sweep_cache(
     *,
     active_keys: Iterable[CacheKey] = (),
 ) -> int:
-    """Evict atime-oldest files until ``cache_root`` fits under ``max_bytes``.
-
-    Files held by outstanding leases are protected. Returns the number
-    of bytes freed. ``max_bytes <= 0`` is a no-op (the on-disk cache is
-    disabled in that mode).
-    """
+    """Evict atime-oldest files until ``cache_root`` fits under ``max_bytes``."""
     if max_bytes <= 0 or not cache_root.exists():
         return 0
     skip = set(active_keys)
@@ -689,7 +559,7 @@ def _sidecar_path(cache_path: Path) -> Path:
 
 
 def _read_fingerprint_head(path: Path) -> bytes:
-    """Read up to ``_FINGERPRINT_HEAD_BYTES`` from the start of ``path``."""
+    """Read up to ``_fingerprint_head_bytes`` from the start of ``path``."""
     with path.open("rb") as f:
         return f.read(_FINGERPRINT_HEAD_BYTES)
 
@@ -699,17 +569,7 @@ def _validate_fast(
     expected_sha: str,
     expected_size: int,
 ) -> bool:
-    """Validate the cache file without reading the whole file.
-
-    Hot-path check: stat size, read sidecar JSON, then sha256 the first
-    64 KiB and compare against ``sidecar.sha256_short``. The full
-    ``expected_sha`` is only read from the sidecar to confirm the
-    artifact is the one we expect — never computed over the file on
-    the hot path.
-
-    Returns ``False`` for any failure. The caller falls through to a
-    fresh S3 download on ``False``.
-    """
+    """Validate the cache file without reading the whole file."""
     try:
         actual_size = cache_path.stat().st_size
     except OSError:
@@ -751,17 +611,7 @@ def _publish_with_sidecar(
     cache_path: Path,
     expected_sha: str,
 ) -> None:
-    """Validate the freshly downloaded ``partial_path`` and atomically
-    publish it as ``cache_path`` with a fingerprint sidecar.
-
-    Steps:
-      1. ``sha256_file(partial_path)`` — full SHA, required for
-         correctness, paid once per cache miss.
-      2. Read first 64 KiB and compute the short fingerprint.
-      3. Write the sidecar JSON to a ``.fp.partial`` sibling.
-      4. ``os.replace(partial_path, cache_path)`` — atomic publish.
-      5. ``os.replace(sidecar_partial, sidecar)`` — atomic publish.
-    """
+    """Validate the freshly downloaded ``partial_path`` and atomically."""
     full_actual = sha256_file(partial_path)
     if full_actual != expected_sha:
         raise RuntimeError(
@@ -816,7 +666,7 @@ def _log_acquire(
     download_seconds: float,
     validate_seconds: float,
 ) -> None:
-    """Emit the structured ``RASTER_ACQUIRE`` summary line."""
+    """Emit the structured ``raster_acquire`` summary line."""
     logger.info(
         "RASTER_ACQUIRE key=%s source=%s cache_hit=%s bytes=%d "
         "wait_seconds=%.4f download_seconds=%.4f validate_seconds=%.4f",
@@ -829,13 +679,7 @@ def _log_acquire(
 
 
 class RasterCache:
-    """Process-level raster acquisition cache.
-
-    Constructed cheaply per request inside FastAPI dependency injection
-    (one per request is fine); the underlying lock and lease registries
-    are module-level singletons so state survives across instances and
-    across event-loop lifetimes.
-    """
+    """The main cache manager."""
 
     def __init__(
         self,
@@ -885,13 +729,7 @@ class RasterCache:
         asset: ClimateAsset,
         storage: StoragePort,
     ) -> RasterLease:
-        """Return a :class:`RasterLease` for ``asset``.
-
-        Concurrent calls for the same asset coalesce into a single
-        download via the per-key :class:`asyncio.Lock`. The on-disk
-        cache is validated against ``asset.checksum`` via a cheap
-        sidecar fingerprint on the hot path.
-        """
+        """Return a :class:`rasterlease` for ``asset``."""
         if self._max_bytes > 0:
             return await self._acquire_on_disk(asset, storage)
         return await self._acquire_ephemeral(asset, storage)
@@ -901,7 +739,7 @@ class RasterCache:
         asset: ClimateAsset,
         storage: StoragePort,
     ) -> AsyncIterator[RasterLease]:
-        """Async context manager wrapping :meth:`acquire` + ``lease.release()``."""
+        """Async context manager wrapping :meth:`acquire` + ``lease."""
         lease = await self.acquire(asset, storage)
         try:
             yield lease
@@ -914,19 +752,7 @@ class RasterCache:
         *,
         asset: ClimateAsset | None = None,
     ) -> xr.Dataset | xr.DataArray:
-        """Open the NetCDF at ``lease.path`` under the per-key open lock.
-
-        Only one coroutine opens a given ``lease.path`` at a time; the
-        lock is keyed on ``cache_key_for(asset)``, not on the whole
-        cache, so unrelated rasters proceed in parallel. The lock is
-        held only across the ``xr.open_dataset`` call.
-
-        Emits one ``OPEN_DATASET`` log line per call with ``key``,
-        ``wait_seconds``, ``open_seconds``, ``status``, and
-        ``concurrent_readers``. The caller is responsible for closing
-        the dataset and releasing the lease (typically via
-        :class:`OpenRasterHandle`).
-        """
+        """Opens a data file for reading, making sure only one task does it at a time."""
         key = lease._key
         # Operators grep the OPEN_DATASET log by ``asset.storage_key``
         # (e.g. ``era5-land/surface_runoff/2026/05.nc``), NOT by the

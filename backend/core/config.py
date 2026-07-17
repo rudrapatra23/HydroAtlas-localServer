@@ -22,23 +22,24 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Application
+    # Core app bits
     app_name: str = Field(...)
     version: str = Field(...)
     environment: Environment = Field(...)
     log_level: LogLevel = Field(...)
 
-    # AWS / S3
+    # AWS / S3 stuff
     aws_region: str = Field(...)
     aws_access_key_id: Optional[str] = Field(default=None)
     aws_secret_access_key: Optional[str] = Field(default=None)
     s3_bucket_name: str = Field(...)
     s3_endpoint_url: Optional[str] = Field(default=None)
 
-    # Database
+    # Postgres connection string
     database_url: str = Field(...)
 
-    # ERA5 ingestion (optional — module is opt-in)
+    # ERA5 ingestion knobs — the whole module is opt-in, so these
+    # can stay unset unless you're running the ingestion pipeline
     cdsapi_url: Optional[str] = Field(default=None)
     cdsapi_key: Optional[str] = Field(default=None)
 
@@ -55,13 +56,16 @@ class Settings(BaseSettings):
     era5_scheduler_timezone: str = Field(default="UTC")
     era5_scheduler_run_once: bool = Field(default=False)
 
-    # District-level raster clipping (backend/district_clip/)
-    # 0.1 deg padding = one ERA5-Land cell, matches validated prototype setting
+    # Settings for the district-level raster clipper (backend/district_clip/).
+    # 0.1 deg padding == one ERA5-Land cell, which is what we landed on
+    # during the prototype testing.
     era5_district_clip_padding_deg: float = Field(default=0.1)
-    # Safety cap on GeoJSON features per request; returns 422 if exceeded
+    # Hard cap on how many GeoJSON features we'll clip in one go.
+    # Anything bigger than this gets bounced back as a 422 to the caller.
     era5_district_clip_max_features: int = Field(default=10_000)
 
-    # Raster acquisition cache — atime-based LRU, 0 disables on-disk cache
+    # Size limit for the on-disk raster cache. It's an atime-based LRU,
+    # so 0 here turns caching off entirely.
     raster_cache_max_bytes: int = Field(default=2 * 1024 * 1024 * 1024)
 
     def era5_storage_root_resolved(self) -> Path:

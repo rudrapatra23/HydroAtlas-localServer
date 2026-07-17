@@ -5,12 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class StatisticsRequest:
-    """Request body for district / state statistics.
-
-    The fundamental time unit is ONE MONTH. Requests specify an inclusive
-    ``[start_year/start_month, end_year/end_month]`` range. Individual
-    days are never part of the API surface.
-    """
+    """Request body for district / state statistics."""
 
     start_year: int
     start_month: int
@@ -19,12 +14,7 @@ class StatisticsRequest:
     variable: str = "precipitation"
 
     def validate(self) -> None:
-        """Validate the inclusive month range.
-
-        Raises:
-            ValueError: when the range is malformed, reversed, or out of
-                bounds for the calendar.
-        """
+        """Validate the inclusive month range."""
         if not (1 <= self.start_month <= 12):
             raise ValueError("start_month must be between 1 and 12")
         if not (1 <= self.end_month <= 12):

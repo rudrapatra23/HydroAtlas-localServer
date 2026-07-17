@@ -1,34 +1,4 @@
-"""
-netcdf_reader.py
-================
-Read and spatially subset ERA5-style NetCDF files (variable x time_slice)
-and convert a bbox/lat-lon window into a rasterio-compatible 2D array +
-Affine transform for use with the existing two-stage district clipping pipeline.
-
-Key design notes
-----------------
-* The ERA5 file uses:
-  - CRS:       EPSG:4326 (geographic, degrees)
-  - Longitude: 0-360 convention (0.0 to 359.9)
-  - Latitude:  decreasing (90.0 -> -90.0), step = -0.1 deg
-* The raster_clip pipeline expects an Affine transform with a negative y-step
-  (top-left origin, row 0 = maximum latitude) - ERA5 already satisfies this.
-* Longitude wrapping: for India (68-97E), all longitudes are < 360 and
-  require no wrapping; the same 0-360 values are used directly.
-
-Public API
-----------
-inspect_netcdf(path)
-    Print/return a metadata summary dict.
-
-read_netcdf_as_array(path, variable, time_index, bbox)
-    Return (array_2d, affine_transform, crs, fill_value, metadata_dict).
-    ``bbox`` must be (minx, miny, maxx, maxy) in EPSG:4326 degrees,
-    using the 0-360 longitude convention when applicable.
-
-bbox_to_lonlat_convention(minx, miny, maxx, maxy, lon_array)
-    Convert a standard -180/+180 bbox to the file's longitude convention.
-"""
+"""Read era5 netcdf data and return a raster-friendly window."""
 
 from __future__ import annotations
 
@@ -44,12 +14,7 @@ from rasterio.transform import from_bounds as affine_from_bounds
 
 logger = logging.getLogger(__name__)
 
-# netCDF4 wraps the HDF5 C library, which is not thread-safe: concurrent
-# Dataset opens/reads from separate threads can corrupt HDF5's internal
-# state and crash the whole process (observed as a Windows access
-# violation / SIGSEGV under rapid concurrent requests). This lock
-# serializes all netCDF4 file access across the process so only one
-# thread is ever inside the C library at a time.
+# netCDF4 is not thread-safe, so we serialize reads to avoid crashes.
 from application.native_io_lock import NATIVE_IO_LOCK as _NC_LOCK
 
 # ---------------------------------------------------------------------------
@@ -57,17 +22,7 @@ from application.native_io_lock import NATIVE_IO_LOCK as _NC_LOCK
 # ---------------------------------------------------------------------------
 
 def inspect_netcdf(path: Union[str, Path]) -> Dict[str, Any]:
-    """
-    Open *path* and return a structured metadata summary.
-
-    Returns
-    -------
-    dict with keys:
-        ``dimensions``, ``variables``, ``global_attrs``,
-        ``lat_range``, ``lat_direction``, ``lat_step``,
-        ``lon_range``, ``lon_step``, ``lon_convention``,
-        ``time_values``, ``time_decoded``
-    """
+    """Open *path* and return a structured metadata summary."""
     path = Path(path)
     meta: Dict[str, Any] = {}
 
@@ -119,14 +74,7 @@ def bbox_to_lonlat_convention(
     maxy: float,
     lon_array: np.ndarray,
 ) -> Tuple[float, float, float, float]:
-    """
-    Convert a bbox in standard -180/+180 longitude to the file's convention.
-
-    If the file uses 0-360 and the bbox longitudes are already in 0-360
-    (all positive and <= 360), they are returned unchanged.
-    If the bbox uses -180/+180 and the file uses 0-360, negative longitudes
-    are shifted by +360.
-    """
+    """Convert a bbox in standard -180/+180 longitude to the file's convention."""
     file_uses_360 = lon_array.max() > 180.0
     if file_uses_360:
         if minx < 0:
@@ -142,51 +90,7 @@ def read_netcdf_as_array(
     time_index: int,
     bbox: Tuple[float, float, float, float],
 ) -> Tuple[np.ndarray, Any, CRS, Optional[float], Dict[str, Any]]:
-    """
-    Read a single variable / time-slice from an ERA5-style NetCDF,
-    spatially subsetted to *bbox*, and return it in a rasterio-compatible
-    form (2-D array with top-left Affine transform).
-
-    Parameters
-    ----------
-    path :
-        Path to the NetCDF file.
-    variable :
-        Variable name (e.g. ``"tp"``, ``"swvl1"``, ``"sro"``).
-    time_index :
-        0-based index into the ``valid_time`` dimension.
-    bbox :
-        ``(minx, miny, maxx, maxy)`` in EPSG:4326 degrees, using the
-        *file's* longitude convention (0-360 for ERA5).
-
-    Returns
-    -------
-    array :
-        2-D ``np.ndarray`` of shape ``(n_lat, n_lon)`` with the top row
-        corresponding to the northernmost latitude in the bbox.
-    affine_transform :
-        ``rasterio.transform.Affine`` aligned to *array*.
-    crs :
-        ``rasterio.crs.CRS`` - always ``EPSG:4326`` for ERA5.
-    fill_value :
-        The variable's ``_FillValue`` (or NaN if absent).
-    metadata :
-        Dict with ``variable``, ``time_index``, ``time_decoded``,
-        ``bbox_used``, ``n_lat``, ``n_lon``, ``lat_step``, ``lon_step``,
-        ``units``, ``long_name``.
-
-    Notes
-    -----
-    Latitude direction
-        ERA5 latitudes are stored decreasing (90 -> -90, step -0.1 deg).
-        After index selection the array rows are already north-first.
-        The resulting Affine transform has a negative y-pixel-size, which
-        is the standard rasterio convention.
-
-    Longitude convention
-        ERA5 uses 0-360. India's longitudes (68-97E) fall within this
-        range and do not require wrapping.
-    """
+    """Read a single variable / time-slice from an era5-style netcdf,."""
     path = Path(path)
     minx, miny, maxx, maxy = bbox
 

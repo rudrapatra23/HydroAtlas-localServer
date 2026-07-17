@@ -59,4 +59,29 @@ input[type="search"]::-webkit-search-results-decoration {
   font-variant-numeric: tabular-nums;
   line-height: 1;
   color: inherit;
+}.white-thumb-slider {
+  appearance: none;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  outline: none;
+}
+.white-thumb-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #0284c7;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.white-thumb-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #0284c7;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }

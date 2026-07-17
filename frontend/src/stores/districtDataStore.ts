@@ -33,6 +33,7 @@ import {
   MonthlySeriesPoint,
   getDistrictMonthlySeries,
 } from "../api/boundaries";
+import { useAppStore } from './useAppStore';
 
 export type Variable = "precipitation" | "soil_moisture" | "surface_runoff";
 
@@ -152,6 +153,10 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
     }));
 
     const runFetch = async () => {
+      const loadingToken = useAppStore.getState().beginLoading(
+        "Fetching precipitation time series",
+        "analysis",
+      );
       try {
         const seriesByVariable: Partial<Record<Variable, DistrictMonthlySeries>> = {};
         let monthsProcessed = 0;
@@ -172,6 +177,15 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
           // Generation guard: if a newer call has bumped our key, abort.
           if (get().generation[key] !== gen) return;
           if (ac.signal.aborted) return;
+          const variableLabel: Record<string, string> = {
+            precipitation: 'Fetching precipitation time series',
+            soil_moisture: 'Fetching soil moisture time series',
+            surface_runoff: 'Fetching surface runoff time series',
+          };
+          useAppStore.getState().updateLoading(
+            loadingToken,
+            variableLabel[variable] ?? `Fetching ${variable}`,
+          );
           const body = {
             start_year: Number(params.startMonth.slice(0, 4)),
             start_month: Number(params.startMonth.slice(5, 7)),
@@ -262,6 +276,7 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
           set((s) => ({ controllers: { ...s.controllers, [key]: null } }));
         }
         set((s) => ({ inflight: { ...s.inflight, [key]: null } }));
+        useAppStore.getState().endLoading(loadingToken);
       }
     };
 

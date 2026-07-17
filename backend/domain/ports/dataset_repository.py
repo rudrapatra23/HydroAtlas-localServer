@@ -29,11 +29,7 @@ class DatasetRepository(ABC):
         provider: str,
         variable: str,
     ) -> Sequence[ClimateAsset]:
-        """Return every asset inside the inclusive ``[start, end]`` month range.
-
-        The result is ordered by ``(year, month)`` ascending so callers can
-        iterate sequentially without loading every raster into memory.
-        """
+        """Return every asset inside the inclusive ``[start, end]`` month range."""
         raise NotImplementedError
 
     @abstractmethod
@@ -44,11 +40,7 @@ class DatasetRepository(ABC):
     def get_available_range(
         self, provider: str, variable: str
     ) -> tuple[int, int, int, int] | None:
-        """Return ``(min_year, min_month, max_year, max_month)`` for the
-        requested ``provider`` / ``variable`` combination, or ``None`` if
-        no assets exist. Used by routers to validate that incoming
-        month-range requests fall inside the known inventory.
-        """
+        """Return ``(min_year, min_month, max_year, max_month)`` for the."""
         raise NotImplementedError
 
     @abstractmethod

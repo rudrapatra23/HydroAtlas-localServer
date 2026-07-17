@@ -78,12 +78,7 @@ class StateDistrictStatisticsResponse:
 
 @dataclass
 class MonthlySeriesPoint:
-    """One month of raster statistics for a single district + variable.
-
-    The fundamental time unit is ONE MONTH; the points are ordered
-    ascending by ``(year, month)`` so the frontend can plot a clean
-    chronological series without re-sorting.
-    """
+    """One month of raster statistics for a single district + variable."""
 
     year: int
     month: int
@@ -94,19 +89,7 @@ class MonthlySeriesPoint:
 
 @dataclass
 class DistrictRasterClipResponse:
-    """End-to-end result of clipping one ERA5 variable/time-slice to a district.
-
-    This is the wire format for ``GET /districts/{district_id}/raster-clip``.
-    It bundles the human-readable district + variable metadata, the
-    GeoJSON ``FeatureCollection`` of clipped cells, summary statistics
-    over the clipped region, and operator-facing diagnostics (timings,
-    I/O counts, payload size).
-
-    The clipped cells preserve the original ERA5 cell value even when
-    the district border cuts the cell — the ``overlap_fraction`` field
-    reports how much of the cell lies inside the district and the
-    ``geometry`` field contains the exact intersected polygon.
-    """
+    """End-to-end result of clipping one era5 variable/time-slice to a district."""
 
     district_id: str
     district_name: str
@@ -130,12 +113,7 @@ class DistrictRasterClipResponse:
 
     @classmethod
     def from_domain(cls, result) -> "DistrictRasterClipResponse":
-        """Build the wire DTO from a ``DistrictClipResult``.
-
-        Centralising the conversion here keeps the router thin and lets
-        the orchestrator evolve its internal dataclass without breaking
-        the public JSON contract.
-        """
+        """Build the wire dto from a ``districtclipresult``."""
         meta = result.district_metadata
         return cls(
             district_id=meta.gid_2,
@@ -159,6 +137,16 @@ class DistrictRasterClipResponse:
             cache_hit=result.cache_hit,
         )
 
+
+@dataclass
+class DistrictRasterClipRangeResponse:
+    """Wire format for get /districts/{district_id}/raster-clip-range."""
+    district_id: str
+    variable: str
+    start: str
+    end: str
+    months_processed: int
+    results: list[DistrictRasterClipResponse]
 
 @dataclass
 class DistrictMonthlySeriesResponse:

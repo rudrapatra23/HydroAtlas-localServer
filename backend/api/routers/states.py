@@ -62,7 +62,7 @@ async def get_state_district_statistics(
     request: StatisticsRequest,
     computation: Annotated[RasterComputation, Depends(get_raster_computation)],
 ) -> StateDistrictStatisticsResponse:
-    """Get aggregated per-district raster statistics for a state over a month range."""
+    """Gather climate statistics for every district within a state for a specific time period."""
     with request_context() as req_id:
         t_req = time.perf_counter()
         logger.info(

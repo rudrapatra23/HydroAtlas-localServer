@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-# Diagnostics must be installed before any native library import (xarray,
-# netCDF4, rasterio are imported lazily by the request path).
+# Wire up diagnostics before anything else pulls in xarray/netCDF4/rasterio.
+# Those native libs really need to be instrumented from the start, otherwise
+# we miss any segfaults or weird memory stuff that happens on import.
 from application.diagnostics import setup_diagnostics
 setup_diagnostics()
 
-# Persistent NATIVE_* lifecycle sink, active early so crash-adjacent lines
-# survive 0xC0000005. Defaults to backend/native_lifecycle.log.
+# Lifecycle log goes in early for the same reason — if a native lib crashes
+# hard, we still want some breadcrumbs in the log to figure out what happened.
 from application.diagnostics import setup_lifecycle_log
 setup_lifecycle_log()
 
@@ -25,12 +26,7 @@ logger = logging.getLogger("uvicorn.error")
 
 
 def _validate_gadm_on_disk() -> None:
-    """Log the resolved GADM path on startup; warn loudly if missing.
-
-    Doesn't raise — a missing GADM file shouldn't crash the whole process,
-    since health/datasets endpoints are still useful. District-level
-    endpoints will fail with a clear FileNotFoundError on first request.
-    """
+    """Make sure the gadm boundary file is actually on disk at boot."""
     gadm_path = Path(_GADM_PATH)
     if not gadm_path.exists():
         logger.warning(
@@ -49,7 +45,7 @@ def _validate_gadm_on_disk() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Validate data dependencies on startup without blocking on S3."""
+    """Run startup/shutdown checks without blocking on anything remote."""
     logger.info("STARTUP_BEGIN app=%s version=%s",
                 app.title, app.version)
     _validate_gadm_on_disk()
@@ -88,6 +84,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(boundaries.router)
     app.include_router(districts.router)
     app.include_router(states.router)
+    # Note to self: if raster-clip-range ever gets pulled out into its own
+    # router (probably under district_clip), don't forget to mount it here.
 
     return app
 

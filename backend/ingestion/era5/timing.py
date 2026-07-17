@@ -1,46 +1,4 @@
-"""PhaseTimer + structured summary logger for the era5 ingestion pipeline.
-
-Each ``Downloader.ensure_dataset`` call exercises up to four distinct
-subsystems (metadata, S3, CDS, S3 upload). A single structured log line
-per call lets operators answer "why did this take 8 seconds?" without
-grepping through stdout.
-
-This module is the single source of truth for that log format. The
-contract:
-
-- :class:`PhaseTimer` is a context manager used by ``Downloader.ensure_dataset``
-  to record the elapsed wall time of each named phase (e.g. ``metadata_lookup``,
-  ``s3_download``). It does not log on its own — that is the caller's job —
-  so the timer stays trivially testable.
-- :func:`log_ensure_summary` emits the canonical structured summary line at
-  ``logger.info``. Callers pass the phases they actually ran and the
-  booleans that drive the log shape (``cache_hit``, ``source``).
-- :class:`EnsureSummary` is a frozen dataclass that mirrors the JSON-shaped
-  payload. It exists for callers that want to serialize the summary to
-  somewhere other than the logger (tests, /status JSON, etc.).
-
-The log keys match the table in ``.kimchi/docs/era5-pg-source-of-truth.md``:
-``event``, ``provider``, ``variable``, ``year``, ``month``,
-``metadata_lookup_ms``, ``s3_download_ms``, ``era5_download_ms``,
-``s3_upload_ms``, ``local_cache_hit``, ``source``, ``total_ms``.
-
-Example::
-
-    timer = PhaseTimer()
-    with timer.phase("metadata_lookup"):
-        asset = await repository.get_by_period(...)
-    log_ensure_summary(
-        logger,
-        provider="era5-land",
-        variable="precipitation",
-        year=2024,
-        month=5,
-        phases=timer.elapsed_ms,
-        cache_hit=True,
-        source="db",
-        total_ms=timer.total_ms(),
-    )
-"""
+"""Phasetimer + structured summary logger for the era5 ingestion pipeline."""
 
 from __future__ import annotations
 
@@ -68,27 +26,14 @@ CacheHit = bool | Literal["n/a"]
 
 @dataclass
 class PhaseTimer:
-    """Records elapsed wall time for each named phase.
-
-    Usage::
-
-        timer = PhaseTimer()
-        with timer.phase("metadata_lookup"):
-            await something()
-        with timer.phase("s3_download"):
-            ...
-        # timer.elapsed_ms == {"metadata_lookup": 12.3, "s3_download": 240.1}
-        # timer.total_ms() == 252.4
-    """
+    """Records elapsed wall time for each named phase."""
 
     _starts: dict[str, float] = field(default_factory=dict)
     elapsed_ms: dict[str, float] = field(default_factory=dict)
     _total_started_at: float | None = None
 
     def start_total(self) -> None:
-        """Reset the global timer. Idempotent — call once at the top of
-        ``ensure_dataset`` to anchor the ``total_ms`` measurement.
-        """
+        """Reset the global timer."""
         self._total_started_at = time.perf_counter()
 
     def total_ms(self) -> float:
@@ -98,12 +43,7 @@ class PhaseTimer:
 
     @contextmanager
     def phase(self, name: str) -> Iterator[None]:
-        """Record the wall time of the enclosed block under ``name``.
-
-        Re-entrant for the same name: the second ``phase("x")`` call
-        accumulates onto the first. Phases that never run simply do not
-        appear in ``elapsed_ms``; the summary log treats them as 0.
-        """
+        """Record the wall time of the enclosed block under ``name``."""
         start = time.perf_counter()
         self._starts[name] = start
         try:
@@ -116,12 +56,7 @@ class PhaseTimer:
 
 @dataclass(frozen=True)
 class EnsureSummary:
-    """The canonical structured payload for an ``ensure_dataset`` call.
-
-    Field names match the documented log keys exactly so ``asdict(...)``
-    round-trips into the JSON-shaped ``extra=`` payload that
-    :func:`log_ensure_summary` emits.
-    """
+    """The canonical structured payload for an ``ensure_dataset`` call."""
 
     event: str
     provider: str
@@ -151,9 +86,7 @@ def build_ensure_summary(
     source: Source,
     total_ms: float,
 ) -> EnsureSummary:
-    """Build an :class:`EnsureSummary` from a phase map and the booleans
-    that drive its shape. Missing phases are reported as 0 ms.
-    """
+    """Build an :class:`ensuresummary` from a phase map and the booleans."""
     return EnsureSummary(
         event=EVENT_ENSURE,
         provider=provider,
@@ -183,12 +116,7 @@ def log_ensure_summary(
     total_ms: float,
     level: int = logging.INFO,
 ) -> EnsureSummary:
-    """Emit the canonical structured summary line.
-
-    The payload is JSON-encoded into ``extra=`` so log aggregators can index
-    the fields directly. A short ``message`` is also emitted so operators
-    tail-ing the log still see what happened without a JSON parser.
-    """
+    """Emit the canonical structured summary line."""
     summary = build_ensure_summary(
         provider=provider,
         variable=variable,
@@ -211,10 +139,5 @@ def log_ensure_summary(
 
 
 def encode_summary_for_extra(summary: EnsureSummary) -> str:
-    """Stable JSON encoding used by tests that assert the log payload.
-
-    The :class:`logging.LogRecord` ``extra=`` mapping is internally
-    type-coerced; tests that capture the record want a deterministic
-    string instead.
-    """
+    """Stable json encoding used by tests that assert the log payload."""
     return json.dumps(summary.to_dict(), sort_keys=True, default=str)

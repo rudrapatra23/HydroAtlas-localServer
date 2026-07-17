@@ -46,14 +46,7 @@ class CdsClient(Protocol):
 
 @dataclass(frozen=True)
 class DatasetHandle:
-    """Result of :meth:`Downloader.ensure_dataset`.
-
-    Carries the local cache path (always set) plus the canonical S3
-    metadata (``storage_key``, ``checksum``, ``file_size``) so callers do
-    not have to re-fetch them. ``cache_hit`` distinguishes "file was on
-    local disk" (``True``) from "we just downloaded it from S3 or CDS"
-    (``False``).
-    """
+    """Result of :meth:`downloader."""
 
     local_path: Path
     storage_key: str
@@ -67,13 +60,7 @@ def _category_to_cds_variable(
     variable: str,
     era5_variables: tuple[Era5Variable, ...],
 ) -> str:
-    """Resolve the CDS ``variable`` long name for a logical category
-    (e.g. ``precipitation`` -> ``total_precipitation``).
-
-    Raises :class:`ValueError` if the category is not in the configured
-    variable set — surfaces a programming error early rather than sending
-    a malformed request to CDS.
-    """
+    """Resolve the cds ``variable`` long name for a logical category."""
     for var in era5_variables:
         category = VARIABLE_CATEGORY.get(var.name, var.name)
         if category == variable:
@@ -85,13 +72,7 @@ def _category_to_cds_variable(
 
 
 class Downloader:
-    """Per-variable ERA5-Land ingestion pipeline.
-
-    :meth:`ensure_dataset` is the single entry point. It is async;
-    blocking calls (CDS, S3, disk I/O) are wrapped in
-    :func:`asyncio.to_thread` so the event loop stays responsive while
-    a long CDS download is in flight.
-    """
+    """Per-variable era5-land ingestion pipeline."""
 
     def __init__(
         self,
@@ -397,9 +378,7 @@ class Downloader:
         timer: PhaseTimer,
         existing_asset: ClimateAsset | None = None,
     ) -> DatasetHandle:
-        """CDS download + split + cache + upload + register for a single
-        ``(provider, variable, year, month)``.
-        """
+        """Cds download + split + cache + upload + register for a single."""
         if self._splitter is None:
             raise RuntimeError("DatasetSplitter is not configured")
         if self._storage_port is None:
@@ -519,12 +498,7 @@ class Downloader:
         request: dict[str, object],
         target: Path,
     ) -> None:
-        """Run the blocking CDS request with the configured retry policy.
-
-        CDS responses come back as ZIP-wrapped NetCDFs. The retry loop
-        deletes the partial ``target`` between attempts; the caller
-        normalizes the final artifact before moving it into place.
-        """
+        """Run the blocking cds request with the configured retry policy."""
         last_exc: Exception | None = None
         for attempt in range(1, self._retry_attempts + 1):
             try:
@@ -571,24 +545,13 @@ class Downloader:
         return cdsapi.Client()
 
     def _move_into_cache(self, source: Path, cache_path: Path) -> None:
-        """Atomically move ``source`` to ``cache_path`` (overwriting).
-
-        ``shutil.move`` falls back to copy+remove when crossing
-        filesystems; since both ``source`` (the splitter's temp output)
-        and ``cache_path`` live under ``storage_root``, the fast rename
-        path is the common case.
-        """
+        """Atomically move ``source`` to ``cache_path`` (overwriting)."""
         if cache_path.exists():
             cache_path.unlink()
         shutil.move(str(source), str(cache_path))
 
     def _ensure_normalized(self, target: Path) -> None:
-        """Run the single normalize-then-validate pipeline on ``target``.
-
-        If ``target`` is a CDS ZIP, extract the inner ``.nc`` member
-        in place. Idempotent: a raw NetCDF is a no-op (still validated
-        so an empty or zero-byte artifact is caught here too).
-        """
+        """Run the single normalize-then-validate pipeline on ``target``."""
         if not zipfile.is_zipfile(target):
             self._validate_artifact(target)
             return
@@ -635,11 +598,7 @@ class Downloader:
         splits: list[SplitFile],
         keep: Path | None = None,
     ) -> None:
-        """Best-effort cleanup of intermediate NetCDF artifacts.
-
-        Failures here are logged but never raised — they cannot undo the
-        upload + register we already performed.
-        """
+        """Best-effort cleanup of intermediate netcdf artifacts."""
         try:
             if bundle_path.exists():
                 bundle_path.unlink()

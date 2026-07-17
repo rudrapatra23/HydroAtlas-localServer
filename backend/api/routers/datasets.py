@@ -15,7 +15,7 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 async def list_datasets(
     service: Annotated[DatasetService, Depends(get_dataset_service)],
 ) -> Sequence[ClimateAssetResponse]:
-    """List all registered climate assets."""
+    """Show a list of all the climate data files we have registered in the system."""
     assets = await service.list_assets()
     return [ClimateAssetResponse.from_domain(asset) for asset in assets]
 
@@ -25,7 +25,7 @@ async def get_dataset(
     id: str,
     service: Annotated[DatasetService, Depends(get_dataset_service)],
 ) -> ClimateAssetResponse:
-    """Get a single climate asset by ID."""
+    """Look up the details for a specific data file using its ID."""
     asset = await service.get_asset(id)
     if not asset:
         raise HTTPException(
@@ -40,7 +40,7 @@ async def delete_dataset(
     id: str,
     service: Annotated[DatasetService, Depends(get_dataset_service)],
 ) -> None:
-    """Delete a climate asset record."""
+    """Remove the record of a climate data file from our database."""
     asset = await service.get_asset(id)
     if not asset:
         raise HTTPException(

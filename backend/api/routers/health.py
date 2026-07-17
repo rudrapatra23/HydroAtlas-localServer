@@ -13,5 +13,5 @@ router = APIRouter(tags=["health"])
 async def health(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, str]:
-    """Liveness probe."""
+    """A simple check to see if the server is up and running."""
     return {"status": "healthy", "version": settings.version}

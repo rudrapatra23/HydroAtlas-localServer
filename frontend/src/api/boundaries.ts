@@ -159,6 +159,18 @@ export interface DistrictRasterClipRequest {
   provider?: string;
 }
 
+/**
+ * Parameters for the range-averaged raster endpoint.
+ * ``start`` and ``end`` are inclusive YYYY-MM strings.
+ */
+export interface DistrictRasterClipRangeRequest {
+  start: string; // YYYY-MM
+  end: string;   // YYYY-MM
+  variable: string;
+  padding_deg?: number;
+  provider?: string;
+}
+
 export async function getStates(): Promise<StateResponseItem[]> {
   return getJson<StateResponseItem[]>("/boundaries/states");
 }
@@ -313,6 +325,56 @@ export async function getDistrictRasterClip(
     signal,
   );
 }
+export interface DistrictRasterClipRangeRequest {
+  start: string;   // "YYYY-MM"
+  end: string;      // "YYYY-MM"
+  variable: string;
+  padding_deg?: number;
+  provider?: string;
+}
+
+export interface DistrictRasterClipRangeResponse {
+  district_id: string;
+  variable: string;
+  start: string;
+  end: string;
+  months_processed: number;
+  results: DistrictRasterClipResponse[];
+}
+
+export async function getDistrictRasterClipRange(
+  districtId: string,
+  params: DistrictRasterClipRangeRequest,
+  signal?: AbortSignal,
+): Promise<DistrictRasterClipRangeResponse> {
+  const search = new URLSearchParams({
+    start: params.start,
+    end: params.end,
+    variable: params.variable,
+  });
+  if (params.padding_deg !== undefined) {
+    search.set("padding_deg", String(params.padding_deg));
+  }
+  if (params.provider) {
+    search.set("provider", params.provider);
+  }
+  return getJson<DistrictRasterClipRangeResponse>(
+    `/districts/${encodeURIComponent(districtId)}/raster-clip-range?${search.toString()}`,
+    signal,
+  );
+}
+
+/**
+ * Fetch a per-pixel averaged raster clipped to a district over an
+ * inclusive month range.
+ *
+ * Calls ``GET /districts/{districtId}/raster-clip-range`` with
+ * ``start`` and ``end`` as YYYY-MM query params. The backend computes
+ * ``numpy.nanmean`` across every monthly raster in the range and returns
+ * the same ``DistrictRasterClipResponse`` shape as the single-month
+ * endpoint, so the map rendering code requires no changes.
+ */
+
 
 export type ClimateAsset = {
   id: string;
@@ -331,3 +393,4 @@ export type ClimateAsset = {
 export async function getDatasets(): Promise<ClimateAsset[]> {
   return getJson<ClimateAsset[]>("/datasets");
 }
+

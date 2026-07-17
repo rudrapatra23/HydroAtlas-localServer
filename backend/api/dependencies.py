@@ -38,13 +38,13 @@ async def get_district_clipper(
     storage: Annotated[StoragePort, Depends(get_storage)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Era5DistrictClipper:
-    """Build a per-request ``Era5DistrictClipper`` for the raster-clip endpoint.
+    """Creates a new `Era5DistrictClipper` for each request to handle raster clipping.
 
-    The clipper is stateless, so constructing it per request is cheap and
-    keeps the dependency-injection graph simple.  The underlying
-    :class:`RasterCache` is a module-level singleton shared with the
-    existing ``/districts/{id}/statistics`` and ``/time-series`` paths,
-    so cache hits for the same NetCDF asset are reused automatically.
+    The clipper itself doesn't store any state, so making one for every request 
+    is light on resources and keeps our dependencies clean. We share a single 
+    `RasterCache` across the whole app, which means if different parts of the 
+    system need the same data, they can just grab it from the cache instead 
+    of downloading it again.
     """
     return Era5DistrictClipper(
         repository=repository,

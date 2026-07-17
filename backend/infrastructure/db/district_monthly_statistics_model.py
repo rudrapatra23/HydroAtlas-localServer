@@ -1,16 +1,4 @@
-"""ORM model for ``district_monthly_statistics``.
-
-Mirror of ``climate_asset_model.py``: SQLAlchemy 2.x typed declarative
-columns, the same ``Base = declarative_base()`` from
-``infrastructure.db.climate_asset_model``, and the same
-``astext_type`` convention for JSONB.
-
-The model uses :class:`sqlalchemy.JSON` (rather than
-``postgresql.JSONB``) so the SQLite-backed ``in_memory_db_session``
-fixture can still construct the table; the production migration uses
-``postgresql.JSONB`` explicitly so the deployed column is the indexable
-JSONB variant.
-"""
+"""Orm model for ``district_monthly_statistics``."""
 
 from __future__ import annotations
 
@@ -35,13 +23,7 @@ from infrastructure.db.climate_asset_model import Base
 
 
 class DistrictMonthlyStatisticsModel(Base):
-    """One row per ``(provider, variable, gid_2, year, month)``.
-
-    Stores the same ``mean / minimum / maximum`` triple the on-demand
-    ``RasterComputation._compute_stats_for_geometry`` produces, plus the
-    pixel-count metadata and the source asset id so a future GC pass
-    can drop rows whose backing raster has been replaced.
-    """
+    """One row per ``(provider, variable, gid_2, year, month)``."""
 
     __tablename__ = "district_monthly_statistics"
     __table_args__ = (

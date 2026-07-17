@@ -1,18 +1,3 @@
-"""
-stats.py
-========
-Compute district-level raster statistics from a ``ClippedRasterResult``.
-
-All statistics operate exclusively on pixels that passed the exact-polygon
-mask – i.e. pixels inside the district boundary.  Pixels in the bounding-box
-margin (outside the district) are never included.
-
-Public API
-----------
-compute_stats(result)   -> dict
-percentile(result, q)   -> float
-"""
-
 from __future__ import annotations
 
 from typing import Dict, Any
@@ -23,22 +8,7 @@ from hydroatlas.raster_clip import ClippedRasterResult
 
 
 def compute_stats(result: ClippedRasterResult) -> Dict[str, Any]:
-    """
-    Compute common descriptive statistics over valid district pixels.
-
-    Parameters
-    ----------
-    result :
-        A :class:`~hydroatlas.raster_clip.ClippedRasterResult` returned by
-        :meth:`~hydroatlas.raster_clip.DistrictRasterClipper.clip`.
-
-    Returns
-    -------
-    dict with keys:
-        ``district_id``, ``raster``, ``band``, ``valid_pixels``,
-        ``mean``, ``std``, ``min``, ``max``, ``sum``, ``median``,
-        ``p25``, ``p75``.
-    """
+    """Compute basic stats for the valid pixels in a clipped district."""
     vals = result.valid_data
     # If fractional overlaps provided, compute weighted stats
     overlaps = getattr(result, "overlap_fractions", None)
@@ -90,21 +60,7 @@ def compute_stats(result: ClippedRasterResult) -> Dict[str, Any]:
 
 
 def percentile(result: ClippedRasterResult, q: float) -> float:
-    """
-    Return the *q*-th percentile of valid district pixels.
-
-    Parameters
-    ----------
-    result :
-        Clipped raster result.
-    q :
-        Percentile in the range ``[0, 100]``.
-
-    Returns
-    -------
-    float
-        The *q*-th percentile, or ``float('nan')`` if no valid pixels exist.
-    """
+    """Return the requested percentile for the valid pixels."""
     vals = result.valid_data
     if len(vals) == 0:
         return float("nan")

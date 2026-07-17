@@ -60,14 +60,7 @@ def get_engine() -> AsyncEngine:
 
 
 def build_asyncpg_url_and_connect_args() -> tuple[str, dict[str, object]]:
-    """Return ``(asyncpg_url, connect_args)`` extracted from ``Settings``.
-
-    Exposed separately from :func:`get_engine` so callers that need a
-    custom ``poolclass`` (e.g. ``NullPool`` for the precompute path,
-    which holds connections open across multi-minute idle periods) can
-    reuse the same URL-building logic without going through the pooled
-    engine.
-    """
+    """Return ``(asyncpg_url, connect_args)`` extracted from ``settings``."""
     settings = get_settings()
     parsed = urlparse(settings.database_url)
     netloc = parsed.netloc

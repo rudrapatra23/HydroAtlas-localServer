@@ -20,7 +20,39 @@ from application.raster_computation import RasterComputation
 from district_clip import DistrictNotFoundError, Era5DistrictClipper
 from domain.ports.dataset_repository import DatasetRepository
 from domain.ports.storage_port import StoragePort
+import re
 
+from application.dto.responses import DistrictRasterClipRangeResponse
+
+_YEAR_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
+
+
+def _parse_year_month(value: str, *, param_name: str) -> tuple[int, int]:
+    """Parse a 'YYYY-MM' query string into (year, month)."""
+    match = _YEAR_MONTH_RE.match(value)
+    if not match:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{param_name}' must be in YYYY-MM format, got '{value}'.",
+        )
+    year, month = int(match.group(1)), int(match.group(2))
+    if not (1 <= month <= 12):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{param_name}' month must be between 01 and 12, got '{value}'.",
+        )
+    return year, month
+
+
+def _month_range(start_year: int, start_month: int, end_year: int, end_month: int):
+    """Yield (year, month) tuples from start to end, inclusive."""
+    y, m = start_year, start_month
+    while (y, m) <= (end_year, end_month):
+        yield y, m
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/districts", tags=["districts"])
@@ -33,11 +65,10 @@ async def get_raster_computation(
     return RasterComputation(repository, storage)
 
 
-# The fundamental time unit is one month. The frontend sends an inclusive
-# ``[start, end]`` month range; the backend uses PostgreSQL
-# ``climate_assets`` as the index to find every monthly asset between the
-# two months, downloads them from S3 sequentially, and returns aggregated
-# statistics over the period.
+# Everything here works month by month. When you ask for a range of dates, 
+# we look into our PostgreSQL database to see what data files we have for 
+# those months. Then, we pull each file from S3 one by one and combine 
+# the numbers to give you the final statistics.
 _NO_PERIOD_MESSAGE = "No climate data available for the selected period."
 
 
@@ -45,7 +76,7 @@ def _validate_range_against_inventory(
     request: StatisticsRequest,
     available: tuple[int, int, int, int] | None,
 ) -> None:
-    """Reject requests whose month range falls outside the known inventory.
+    """Check if the requested dates actually have data available.
 
     Raises:
         HTTPException: 400 when the inventory is empty or the requested
@@ -78,7 +109,7 @@ async def get_district_statistics(
     request: StatisticsRequest,
     computation: Annotated[RasterComputation, Depends(get_raster_computation)],
 ) -> StatisticsResponse:
-    """Get aggregated raster statistics for a district over a month range."""
+    """Calculate the average, minimum, and maximum climate values for a specific district over a period of time."""
     with request_context() as req_id:
         logger.info(
             "REQUEST_BEGIN endpoint=district_statistics request_id=%s "
@@ -181,13 +212,13 @@ async def get_district_time_series(
     request: StatisticsRequest,
     computation: Annotated[RasterComputation, Depends(get_raster_computation)],
 ) -> DistrictMonthlySeriesResponse:
-    """Get per-month raster statistics for a district over a month range.
+    """Fetch monthly climate stats for a district. This gives you a data point 
+    for every single month in your requested range.
 
-    The response is the natural primitive for the BottomPanel's Time
-    Series, Trend, and Export tabs — each ``point`` carries the
-    ``(year, month)`` anchor plus ``mean``/``min``/``max`` so the
-    frontend can plot a clean chronological series, compute a regression
-    line, or build a CSV without further round-trips.
+    This data is perfect for building charts, showing trends, or exporting 
+    to CSV. Each point includes the year, month, and the core stats 
+    (mean, min, max), so the frontend has everything it needs to 
+    display the data without asking for more.
     """
     with request_context() as req_id:
         logger.info(
@@ -318,19 +349,18 @@ async def get_district_raster_clip(
         Query(description="Climate data provider key."),
     ] = "era5-land",
 ) -> DistrictRasterClipResponse:
-    """Return the per-cell ERA5 raster clipped to a GADM district boundary.
+    """Take the climate data and 'cookie-cutter' it to fit exactly within a 
+    district's borders.
 
-    The endpoint resolves the exact GADM geometry via the production
-    boundary loader, fetches the (provider, variable, year, month)
-    NetCDF through the existing S3-backed ``RasterCache``, performs
-    the validated two-stage clip (bbox pre-filter + exact geometric
-    clip in an LAEA equal-area projection), and returns the resulting
-    clipped cells as a GeoJSON ``FeatureCollection`` plus summary
-    statistics and operator-facing diagnostics.
+    First, we look up the precise shape of the district. Then, we fetch 
+    the right data file from our cache. We do a two-step process to clip 
+    the data: first, we narrow it down to the area around the district, 
+    and then we trim it exactly to the district's borders. Finally, we 
+    send back the clipped data as GeoJSON along with some helpful stats.
 
-    Boundary cells preserve the original ERA5 cell value; only the
-    geometry is clipped at the district border. Cells entirely outside
-    the district are excluded from the response.
+    For the cells that sit right on the border, we keep their original 
+    values but trim their shapes. Anything completely outside the 
+    district is left out.
     """
     with request_context() as req_id:
         logger.info(
@@ -446,6 +476,164 @@ async def get_district_raster_clip(
         except Exception:
             logger.exception(
                 "REQUEST_ERROR endpoint=district_raster_clip request_id=%s "
+                "error=unhandled pid=%d thread_id=%d task_id=%s",
+                req_id, os.getpid(), threading.get_ident(), id(asyncio.current_task()),
+            )
+            flush()
+            raise
+@router.get(
+    "/{district_id}/raster-clip-range",
+    response_model=DistrictRasterClipRangeResponse,
+    name="district_raster_clip_range",
+)
+async def get_district_raster_clip_range(
+    district_id: str,
+    clipper: Annotated[Era5DistrictClipper, Depends(get_district_clipper)],
+    computation: Annotated[RasterComputation, Depends(get_raster_computation)],
+    start: Annotated[str, Query(description="Start month, format YYYY-MM.")],
+    end: Annotated[str, Query(description="End month, format YYYY-MM.")],
+    variable: Annotated[
+        str,
+        Query(
+            description=(
+                "HydroAtlas public variable name. One of "
+                "'precipitation', 'soil_moisture', 'surface_runoff'."
+            ),
+        ),
+    ] = "precipitation",
+    padding_deg: Annotated[float, Query(ge=0.0, le=2.0)] = 0.1,
+    provider: Annotated[str, Query(description="Climate data provider key.")] = "era5-land",
+) -> DistrictRasterClipRangeResponse:
+    """Clip a range of months to a district's borders, one clip per month.
+
+    This is the range version of /raster-clip: instead of a single
+    year/month, give a start and end month (YYYY-MM) and get back one
+    clipped GeoJSON result per month, in the same shape /raster-clip
+    already returns for a single month.
+
+    Months with no data are skipped rather than failing the whole
+    request — you get back whatever months are actually available.
+    """
+    with request_context() as req_id:
+        logger.info(
+            "REQUEST_BEGIN endpoint=district_raster_clip_range request_id=%s "
+            "district_id=%s variable=%s start=%s end=%s pid=%d thread_id=%d task_id=%s",
+            req_id, district_id, variable, start, end,
+            os.getpid(), threading.get_ident(), id(asyncio.current_task()),
+        )
+        flush()
+        try:
+            start_year, start_month = _parse_year_month(start, param_name="start")
+            end_year, end_month = _parse_year_month(end, param_name="end")
+
+            if (start_year, start_month) > (end_year, end_month):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'start' must not be after 'end'.",
+                )
+
+            available = await computation.repository.get_available_range(
+                provider=provider,
+                variable=variable,
+            )
+            if available is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=_NO_PERIOD_MESSAGE,
+                )
+            min_year, min_month, max_year, max_month = available
+            start_key = start_year * 12 + (start_month - 1)
+            end_key = end_year * 12 + (end_month - 1)
+            min_key = min_year * 12 + (min_month - 1)
+            max_key = max_year * 12 + (max_month - 1)
+            if start_key < min_key or end_key > max_key:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Selected month range falls outside the available "
+                        f"dataset range {min_year:04d}-{min_month:02d} to "
+                        f"{max_year:04d}-{max_month:02d}."
+                    ),
+                )
+
+            results: list[DistrictRasterClipResponse] = []
+            for year, month in _month_range(start_year, start_month, end_year, end_month):
+                try:
+                    clip_result = await clipper.clip(
+                        district_id=district_id,
+                        year=year,
+                        month=month,
+                        variable=variable,
+                        padding_deg=padding_deg,
+                        provider=provider,
+                    )
+                except DistrictNotFoundError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=str(exc),
+                    )
+                except KeyError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=str(exc),
+                    )
+                except ValueError as exc:
+                    logger.info(
+                        "REQUEST_ERROR endpoint=district_raster_clip_range "
+                        "request_id=%s year=%04d month=%02d error=value_error "
+                        "detail=%s skipping_month=true",
+                        req_id, year, month, exc,
+                    )
+                    continue
+                except FileNotFoundError as exc:
+                    logger.error(
+                        "REQUEST_ERROR endpoint=district_raster_clip_range "
+                        "request_id=%s year=%04d month=%02d error=netcdf_missing "
+                        "detail=%s skipping_month=true",
+                        req_id, year, month, exc,
+                    )
+                    continue
+
+                n_features = len(clip_result.feature_collection.get("features", []))
+                if n_features > clipper.max_features:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"District yields {n_features} clipped cells for "
+                            f"{year:04d}-{month:02d}, which exceeds the "
+                            f"configured maximum of {clipper.max_features}. "
+                            "Re-run with a smaller bbox padding or split the district."
+                        ),
+                    )
+
+                results.append(DistrictRasterClipResponse.from_domain(clip_result))
+
+            if not results:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No climate data available for any month between {start} and {end}.",
+                )
+
+            logger.info(
+                "REQUEST_END endpoint=district_raster_clip_range request_id=%s "
+                "district_id=%s months_processed=%d pid=%d thread_id=%d task_id=%s",
+                req_id, district_id, len(results),
+                os.getpid(), threading.get_ident(), id(asyncio.current_task()),
+            )
+            flush()
+            return DistrictRasterClipRangeResponse(
+                district_id=district_id,
+                variable=variable,
+                start=start,
+                end=end,
+                months_processed=len(results),
+                results=results,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "REQUEST_ERROR endpoint=district_raster_clip_range request_id=%s "
                 "error=unhandled pid=%d thread_id=%d task_id=%s",
                 req_id, os.getpid(), threading.get_ident(), id(asyncio.current_task()),
             )

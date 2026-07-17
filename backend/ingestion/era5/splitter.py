@@ -15,15 +15,7 @@ _logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Era5Variable:
-    """An ERA5 variable plus the short names used inside CDS NetCDF bundles.
-
-    ``aliases`` enumerates every accepted short name so the splitter can
-    recognise a variable regardless of which CDS short name a downloaded
-    bundle happens to use. Historically surface runoff was emitted as
-    ``ro``; the modern CDS API emits ``sro``. Both must map to the same
-    logical variable. ``alias`` returns the canonical (first) alias and
-    is preserved for callers that read the singular attribute.
-    """
+    """An era5 variable plus the short names used inside cds netcdf bundles."""
     name: str
     aliases: tuple[str, ...] = field(default_factory=tuple)
 
@@ -53,7 +45,7 @@ class Era5Variable:
 
     @property
     def alias(self) -> str:
-        """Canonical short name (first alias). Preserved for back-compat."""
+        """Canonical short name (first alias)."""
         return self.aliases[0]
 
 
@@ -83,7 +75,7 @@ class SplitFile:
 
 
 class DatasetSplitter:
-    """Splits a multi-variable ERA5 NetCDF bundle into per-variable files."""
+    """Splits a multi-variable era5 netcdf bundle into per-variable files."""
 
     def __init__(self, era5_variables: tuple[Era5Variable, ...] = DEFAULT_ERA5_VARIABLES) -> None:
         self._era5_variables = era5_variables

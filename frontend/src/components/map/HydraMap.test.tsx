@@ -85,6 +85,46 @@ vi.mock("../../api/boundaries", () => ({
     asset_storage_key: "era5-land/precipitation/2025/12.nc",
     cache_hit: true,
   }),
+  // Range endpoint — returns the same mock shape; the component uses it
+  // for multi-month selections (startMonth !== endMonth).
+  getDistrictRasterClipRange: vi.fn().mockResolvedValue({
+    district_id: "IND.1.1.1_1",
+    district_name: "District One",
+    state_id: "IND.1.1_1",
+    state_name: "State One",
+    variable: "precipitation",
+    variable_long_name: "Precipitation",
+    nc_variable: "tp",
+    units: "m",
+    year: 2025,
+    month: 1,
+    time_decoded: "2025-01-01T00:00:00",
+    source_resolution_deg: 0.1,
+    bbox_used: [0, 0, 1, 1],
+    feature_collection: {
+      type: "FeatureCollection",
+      features: [],
+    },
+    summary: {
+      valid_cells: 1,
+      boundary_cells: 0,
+      excluded_cells: 0,
+      bbox_cells_total: 1,
+      mean: 1,
+      std: 0,
+      min: 1,
+      max: 1,
+      sum: 1,
+      median: 1,
+      p25: 1,
+      p75: 1,
+      partial_geom_count: 0,
+    },
+    diagnostics: {},
+    asset_id: "asset-1",
+    asset_storage_key: "era5-land/precipitation/2025/01.nc",
+    cache_hit: false,
+  }),
   getDistrictRangeStatistics: vi.fn(),
   getStateDistrictRangeStatistics: vi.fn(),
   getDistrictMonthlySeries: vi.fn(),
@@ -94,12 +134,14 @@ import HydraMap from "./HydraMap";
 import { Map as MapLibreMap } from "maplibre-gl";
 import {
   getDistrictRasterClip,
+  getDistrictRasterClipRange,
   getDistrictsGeojson,
   getStateDistrictRangeStatistics,
 } from "../../api/boundaries";
 
 const mockedGeojson = getDistrictsGeojson as unknown as ReturnType<typeof vi.fn>;
 const mockedRasterClip = getDistrictRasterClip as unknown as ReturnType<typeof vi.fn>;
+const mockedRasterClipRange = getDistrictRasterClipRange as unknown as ReturnType<typeof vi.fn>;
 const mockedStateStats = getStateDistrictRangeStatistics as unknown as ReturnType<typeof vi.fn>;
 const MockMapCtor = MapLibreMap as unknown as ReturnType<typeof vi.fn>;
 
@@ -108,6 +150,7 @@ beforeEach(() => {
   MockMapCtor.mockClear();
   mockedGeojson.mockClear();
   mockedRasterClip.mockClear();
+  mockedRasterClipRange.mockClear();
   mockedStateStats.mockClear();
   useAppStore.setState({
     selectedStateId: null,
@@ -155,7 +198,7 @@ describe("HydraMap", () => {
     expect(mockedGeojson).toHaveBeenCalledWith("IND.1.1_1");
   });
 
-  it("fetches district raster cells from the raster-clip endpoint for the selected district, variable, and end month", async () => {
+  it("fetches district raster cells from the raster-clip-range endpoint for multi-month ranges", async () => {
     render(<HydraMap />);
 
     await act(async () => {
@@ -164,17 +207,20 @@ describe("HydraMap", () => {
     });
     await act(async () => {});
 
-    expect(mockedRasterClip).toHaveBeenCalledWith(
+    // startMonth="2025-01", endMonth="2025-12" → 12 months → range endpoint.
+    expect(mockedRasterClipRange).toHaveBeenCalledWith(
       "IND.1.1.1_1",
       {
-        year: 2025,
-        month: 12,
+        start: "2025-01",
+        end: "2025-12",
         variable: "precipitation",
       },
     );
+    // Single-month endpoint must NOT be called for a multi-month range.
+    expect(mockedRasterClip).not.toHaveBeenCalled();
   });
 
-  it("refetches the district raster when the active raster variable changes", async () => {
+  it("refetches the district raster range when the active raster variable changes", async () => {
     render(<HydraMap />);
 
     await act(async () => {
@@ -183,18 +229,19 @@ describe("HydraMap", () => {
     });
     await act(async () => {});
 
-    mockedRasterClip.mockClear();
+    mockedRasterClipRange.mockClear();
 
     await act(async () => {
       useAppStore.getState().setSelectedVariable("soil_moisture");
     });
     await act(async () => {});
 
-    expect(mockedRasterClip).toHaveBeenCalledWith(
+    // startMonth="2025-01", endMonth="2025-12" → still multi-month.
+    expect(mockedRasterClipRange).toHaveBeenCalledWith(
       "IND.1.1.1_1",
       {
-        year: 2025,
-        month: 12,
+        start: "2025-01",
+        end: "2025-12",
         variable: "soil_moisture",
       },
     );

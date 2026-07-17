@@ -7,7 +7,7 @@ from domain.ports.dataset_repository import DatasetRepository
 
 
 class DatasetService:
-    """Read-only service for querying climate assets registered by era5_fetch."""
+    """Service to fetch registered climate data."""
 
     def __init__(self, repository: DatasetRepository):
         self.repository = repository
@@ -19,8 +19,5 @@ class DatasetService:
         return await self.repository.list()
 
     async def delete_asset(self, asset_id: str) -> None:
-        """Delete the asset record from PostgreSQL.
-
-        S3 objects are owned by era5_fetch and are not deleted here.
-        """
+        """Deletes db record only, keeps s3 files intact."""
         await self.repository.delete(asset_id)

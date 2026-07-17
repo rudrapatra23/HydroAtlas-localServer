@@ -1,4 +1,3 @@
-"""Geospatial computation for ERA5 climate data."""
 from __future__ import annotations
 
 import asyncio
@@ -45,7 +44,7 @@ class RasterClipResult:
 
 @dataclass
 class AggregatedRasterStats:
-    """Aggregated statistics for a single geometry over a month range."""
+    """The final stats for a district or state over a period of several months."""
     months_processed: int
     mean: float
     minimum: float
@@ -53,15 +52,7 @@ class AggregatedRasterStats:
 
 
 def _close_and_cleanup(raster: xr.Dataset | xr.DataArray | None, lease: RasterLease | None) -> None:
-    """Close the xarray object and release the raster cache lease.
-
-    Transitional helper for callers that acquired the dataset and lease
-    independently. New callers should use OpenRasterHandle instead and
-    call handle.close() so dataset/lease ownership is bundled.
-
-    Called inside finally blocks so file handles are never leaked even
-    when an exception is raised mid-iteration.
-    """
+    """A cleanup helper that makes sure we close files and release our 'leases'."""
     if raster is not None:
         try:
             raster.close()
@@ -94,6 +85,7 @@ class RasterComputation:
         month: int,
         variable: str,
     ) -> OpenRasterHandle:
+        """Finds a specific data file in our database and opens it from the cache."""
         t0 = time.perf_counter()
         asset = await self.repository.get_by_period(year, month, provider, variable)
         t1 = time.perf_counter()
@@ -107,6 +99,7 @@ class RasterComputation:
         raster: xr.Dataset | xr.DataArray,
         variable: str,
     ) -> xr.DataArray:
+        """Picks the correct variable (like 'precipitation') out of a data file."""
         nc_var = VARIABLE_MAP.get(variable)
         if nc_var is None:
             raise ValueError(f"Unknown variable '{variable}'. Valid options: {list(VARIABLE_MAP.keys())}")
@@ -132,11 +125,8 @@ class RasterComputation:
         data: xr.DataArray,
         geometry: gpd.GeoDataFrame,
     ) -> RasterClipResult:
+        """The core 'cookie-cutter' logic: cuts the data to a district's shape and calculates stats."""
         req_id = get_request_id()
-        # Eager metadata conversion: tuple(data.dims), not dict(...), since
-        # data.dims is a tuple of dim-name strings for a DataArray. Routed
-        # through safe_log so a formatting failure can't interrupt the
-        # clip+compute path.
         safe_log(
             logging.INFO,
             "RIO_CLIP_BEGIN request_id=%s dims=%s shape=%s",
@@ -144,19 +134,13 @@ class RasterComputation:
         )
         flush()
         try:
-            # all_touched=True includes any cell that overlaps the polygon
-            # at all, not just cells whose center falls inside it. Needed
-            # for small/compact districts (e.g. dense urban areas like
-            # Kolkata) that can be smaller than a single ERA5-Land cell
-            # (~0.1deg / ~11km) -- without this, such districts match zero
-            # cells under the default center-point rule and raise
-            # NoDataInBounds even though they're valid land, not ocean.
+            # We use 'all_touched=True' to make sure we don't miss tiny districts 
+            # that might be smaller than a single square on our climate map. 
+            # This is really important for cities like Kolkata.
             clipped = data.rio.clip(geometry.geometry.values, geometry.crs, all_touched=True)
         except rioxarray.exceptions.NoDataInBounds:
-            # Genuine case: every overlapping cell is masked (ocean/no-data
-            # in the source), not a resolution artifact -- e.g. a coastal
-            # district with no ERA5-Land cell overlapping it at all. Return
-            # a zero-coverage result rather than a 500.
+            # If a district is completely outside our data range (like a far-off island 
+            # or deep in the ocean), we return zeros instead of crashing.
             logger.warning(
                 "RIO_CLIP_NO_DATA request_id=%s -- no valid cells even with all_touched=True",
                 req_id,
@@ -209,7 +193,7 @@ class RasterComputation:
         )
 
     def get_district_geometry(self, district_gid: str) -> gpd.GeoDataFrame:
-        """Load district geometry by GID_2 from GADM."""
+        """Looks up the official boundary for a district using its id."""
         adm2 = get_adm2()
         district = adm2[adm2["GID_2"] == district_gid]
         if district.empty:
@@ -217,24 +201,7 @@ class RasterComputation:
         return district
 
     async def read_raster_from_s3(self, asset: ClimateAsset) -> OpenRasterHandle:
-        """Resolve ``asset`` through the shared raster cache and open it.
-
-        The local cache file at
-        Settings.raster_cache_root_resolved()/{provider}/{variable}/{YYYY}/{MM}.nc
-        is reused across requests; concurrent requests for the same asset
-        coalesce into one S3 download via the cache's per-key single-flight,
-        and opens are serialised per storage key via
-        application.raster_cache.RasterCache.open_dataset.
-
-        Returns an OpenRasterHandle bundling the opened dataset, cache
-        path, and active RasterLease. The caller MUST close the handle
-        once done so the file handle is dropped and the cache file
-        becomes eviction-eligible.
-
-        Exception safety: if open_dataset (or write_crs) raises after
-        acquire succeeds, the lease is released here so the cache file
-        isn't protected forever with no reader.
-        """
+        """Downloads a data file from s3 (if not already cached) and opens it for reading."""
         lease = await self._raster_cache.acquire(asset, self.storage)
         try:
             rds = await self._raster_cache.open_dataset(lease, asset=asset)
@@ -268,16 +235,7 @@ class RasterComputation:
         variable: str,
         concurrency: int = 6,
     ) -> AggregatedRasterStats:
-        """Fetch/open/clip up to ``concurrency`` months in parallel and aggregate.
-
-        Same rationale as compute_monthly_series_for_district: the S3
-        download dominates per-month cost and is pure I/O wait, so
-        overlapping several downloads meaningfully cuts wall-clock time on
-        multi-year ranges. Actual netCDF opens remain serialized via
-        RasterCache.open_dataset's NATIVE_IO_LOCK regardless of
-        concurrency, so this does not reintroduce the concurrent-access
-        crash. Peak memory scales with concurrency, not range length.
-        """
+        """Fetch/open/clip up to ``concurrency`` months in parallel and aggregate."""
         assets = list(assets)
         semaphore = asyncio.Semaphore(concurrency)
         t_request_start = time.perf_counter()
@@ -364,19 +322,7 @@ class RasterComputation:
         provider: str = "era5-land",
         concurrency: int = 6,
     ) -> list[MonthlySeriesPoint]:
-        """Return per-month raster statistics for a district over a range.
-
-        Fetches/opens up to ``concurrency`` months in parallel. The S3
-        download is the dominant cost per month (~0.6-0.7s) and is pure
-        I/O wait, so overlapping several downloads gives a large wall-clock
-        win on multi-year ranges. The actual netCDF/HDF5 open still goes
-        through RasterCache.open_dataset's NATIVE_IO_LOCK, so opens remain
-        strictly serialized regardless of how many months are in flight --
-        this does not reintroduce the concurrent-access crash.
-
-        Peak memory scales with ``concurrency`` (each in-flight month holds
-        one open dataset), not with the total range length.
-        """
+        """Return per-month raster statistics for a district over a range."""
         geometry = self.get_district_geometry(district_gid)
         assets = await self.repository.list_by_period_range(
             start_year=start_year,
@@ -560,13 +506,7 @@ class RasterComputation:
         variable: str = "precipitation",
         provider: str = "era5-land",
     ) -> AggregatedRasterStats:
-        """Compute aggregated raster statistics for a single district over a month range.
-
-        Uses climate_assets as the index: every asset between the
-        inclusive [start, end] month bounds is fetched from PostgreSQL,
-        then iterated sequentially. Each NetCDF is downloaded, opened,
-        clipped, and freed before the next is touched.
-        """
+        """Compute aggregated raster statistics for a single district over a month range."""
         geometry = self.get_district_geometry(district_gid)
         assets = await self.repository.list_by_period_range(
             start_year=start_year,
@@ -592,15 +532,7 @@ class RasterComputation:
         variable: str = "precipitation",
         provider: str = "era5-land",
     ) -> tuple[int, list[StateDistrictStatisticsItem]]:
-        """Compute aggregated per-district statistics for a state over a month range.
-
-        Returns (months_processed, districts) so the router can surface
-        the same months_processed count regardless of whether any
-        district has data. For every month in the range, the state-wide
-        raster is downloaded once and clipped against every district
-        geometry; files are released between months so peak memory stays
-        bounded to one raster at a time.
-        """
+        """Compute aggregated per-district statistics for a state over a month range."""
         t_total = time.perf_counter()
 
         t0 = time.perf_counter()

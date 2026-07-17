@@ -89,21 +89,7 @@ function KpiCard({
   );
 }
 
-function RefreshingBadge({ label = "Updating…" }: { label?: string }) {
-  return (
-    <div
-      className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-full bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm backdrop-blur-sm"
-      role="status"
-      aria-live="polite"
-    >
-      <span
-        className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white"
-        aria-hidden="true"
-      />
-      {label}
-    </div>
-  );
-}
+
 
 function monthStringToYearMonth(
   monthString: string,
@@ -257,12 +243,10 @@ function SelectedLocation() {
               );
             })}
           </div>
-          {data.loading && <RefreshingBadge label="Processing new selection…" />}
+          {data.loading && null}
         </div>
       ) : showInitialSpinner ? (
-        <div className="flex items-center justify-center py-8">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-slate-700" />
-        </div>
+        <div className="py-8" />
       ) : data.noData ? (
         <div className="flex items-center justify-center py-8 text-sm text-slate-500">
           No climate data available for the selected period.

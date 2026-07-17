@@ -5,6 +5,7 @@ import DataExplorer from "./data-explorer/DataExplorer";
 import SelectedLocation from "./selected-location/SelectedLocation";
 import HydraMap from "./map/HydraMap";
 import BottomPanel from "./bottom-panel/BottomPanel";
+import LoadingOverlay from "./LoadingOverlay";
 
 /**
  * Studio application shell.
@@ -83,6 +84,9 @@ export default function AppShell() {
       <div className="absolute bottom-4 left-0 right-0 mx-auto w-full max-w-3xl px-4 z-20 pointer-events-auto">
         <BottomPanel />
       </div>
+
+      {/* LAYER 5: GLOBAL LOADING OVERLAY (above everything) */}
+      <LoadingOverlay />
 
     </div>
   );

@@ -1,37 +1,4 @@
-"""
-raster_clip.py
-==============
-Two-stage district-level raster clipping for HydroAtlas.
-
-Stage 1 – Bounding-box pre-filter
-    Compute a padded bounding box around the district polygon and read only
-    the raster window that intersects it, avoiding full-raster I/O.
-
-Stage 2 – Exact-polygon mask
-    Apply the precise district polygon as a rasterio mask against the bbox
-    subset.  Pixels inside the bbox but outside the district are set to
-    NoData and excluded from all downstream calculations.
-
-Public API
-----------
-``DistrictRasterClipper``   – main class; call ``.clip()``
-``ClippedRasterResult``     – dataclass carrying the masked array, transform,
-                              CRS, nodata value, and spatial metadata.
-
-Helper functions (also importable):
-    transform_geometry_to_raster_crs(geom, src_crs, dst_crs)
-    get_padded_bbox(geometry, padding)
-    bbox_to_raster_window(bbox, raster_transform, raster_width, raster_height)
-    read_raster_window(dataset, window, band)
-    mask_window_with_exact_geometry(windowed_dataset_or_array,
-                                    geometry, window_transform, nodata)
-
-Important correctness invariant
---------------------------------
-A bounding box is only a coarse spatial pre-filter.  Statistics must
-**never** be computed from raw bbox pixels.  After masking, only pixels
-inside the exact district polygon are valid.
-"""
+"""Clip raster data to district boundaries in two steps."""
 
 from __future__ import annotations
 
@@ -55,40 +22,11 @@ from shapely.geometry.base import BaseGeometry
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # Result container
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ClippedRasterResult:
-    """
-    Carries the output of a two-stage district raster clip.
-
-    Attributes
-    ----------
-    data : np.ma.MaskedArray
-        2-D (or 3-D for multi-band) masked array.  Masked (``True``) entries
-        are pixels **outside** the district polygon or original NoData pixels.
-        Shape is ``(rows, cols)`` for single-band reads.
-    transform : Affine
-        Affine geo-transform of *data* (top-left corner of the clipped extent).
-    crs : rasterio.crs.CRS
-        Coordinate reference system of the raster (unchanged after clipping).
-    nodata : float or None
-        NoData sentinel value used in the source raster.
-    district_id : str
-        Identifier of the district that was clipped.
-    raster_path : Path
-        Source raster file that was read.
-    band : int
-        Band index (1-based) that was read.
-    bbox_used : Tuple[float, float, float, float]
-        ``(minx, miny, maxx, maxy)`` of the padded bounding box used for
-        the Stage-1 window read (informational only).
-    valid_pixel_count : int
-        Number of pixels that lie inside the exact district polygon after
-        masking (i.e. unmasked pixels).
-    """
+    """Carries the output of a two-stage district raster clip."""
 
     data: ma.MaskedArray
     transform: Affine
@@ -113,16 +51,16 @@ class ClippedRasterResult:
 
     @property
     def valid_data(self) -> np.ndarray:
-        """Return a flat 1-D array of all unmasked pixel values."""
+        """Return a flat 1-d array of all unmasked pixel values."""
         return self.data.compressed()
 
     def mean(self) -> float:
-        """Mean of valid pixels; returns NaN if no valid pixels."""
+        """Mean of valid pixels; returns nan if no valid pixels."""
         vals = self.valid_data
         return float(np.mean(vals)) if len(vals) else float("nan")
 
     def std(self) -> float:
-        """Std-dev of valid pixels; returns NaN if no valid pixels."""
+        """Std-dev of valid pixels; returns nan if no valid pixels."""
         vals = self.valid_data
         return float(np.std(vals)) if len(vals) else float("nan")
 
@@ -139,12 +77,10 @@ class ClippedRasterResult:
         return float(np.sum(vals)) if len(vals) else float("nan")
 
 
-# ---------------------------------------------------------------------------
-# Step 0 – CRS helpers
-# ---------------------------------------------------------------------------
+# CRS helpers
 
 def _parse_crs(crs_input: Union[str, int, CRS]) -> CRS:
-    """Normalise a CRS input to a ``rasterio.crs.CRS`` object."""
+    """Normalise a crs input to a ``rasterio."""
     if isinstance(crs_input, CRS):
         return crs_input
     if isinstance(crs_input, int):
@@ -153,47 +89,25 @@ def _parse_crs(crs_input: Union[str, int, CRS]) -> CRS:
 
 
 def _crs_equal(a: CRS, b: CRS) -> bool:
-    """Return True if two CRS objects represent the same coordinate system."""
+    """Return true if two crs objects represent the same coordinate system."""
     try:
         return a.to_epsg() == b.to_epsg() and a.to_epsg() is not None
     except Exception:
         return a.to_wkt() == b.to_wkt()
 
 
-# ---------------------------------------------------------------------------
-# Step 1 – Geometry CRS reprojection
-# ---------------------------------------------------------------------------
 
 def transform_geometry_to_raster_crs(
     geom: BaseGeometry,
     src_crs: Union[str, int, CRS],
     dst_crs: Union[str, int, CRS],
 ) -> BaseGeometry:
-    """
-    Reproject *geom* from *src_crs* to *dst_crs*.
-
-    If the two CRS are equal (or equivalent) the original geometry is
-    returned unchanged without any computation.
-
-    Parameters
-    ----------
-    geom :
-        A Shapely geometry (Polygon, MultiPolygon, etc.).
-    src_crs :
-        CRS of *geom* – EPSG int, WKT string, or ``rasterio.crs.CRS``.
-    dst_crs :
-        Target CRS (same formats).
-
-    Returns
-    -------
-    shapely.geometry.BaseGeometry
-        Reprojected geometry in *dst_crs*.
-    """
+    
     src = _parse_crs(src_crs)
     dst = _parse_crs(dst_crs)
 
     if _crs_equal(src, dst):
-        logger.debug("CRS identical – skipping reprojection.")
+        logger.debug("CRS identical - skipping reprojection.")
         return geom
 
     logger.debug("Reprojecting geometry from %s to %s", src.to_epsg(), dst.to_epsg())
@@ -202,36 +116,12 @@ def transform_geometry_to_raster_crs(
     return shape(reprojected_dict)
 
 
-# ---------------------------------------------------------------------------
-# Step 2 – Padded bounding box
-# ---------------------------------------------------------------------------
 
 def get_padded_bbox(
     geometry: BaseGeometry,
     padding: float = 0.0,
 ) -> Tuple[float, float, float, float]:
-    """
-    Return a bounding box ``(minx, miny, maxx, maxy)`` around *geometry*
-    with an optional uniform *padding* in the geometry's native units.
 
-    Parameters
-    ----------
-    geometry :
-        A Shapely geometry.
-    padding :
-        Extra buffer in the geometry's native units (metres for projected
-        CRS, degrees for geographic CRS).  Defaults to ``0.0``.
-
-    Returns
-    -------
-    tuple
-        ``(minx, miny, maxx, maxy)``
-
-    Notes
-    -----
-    The bounding box is a coarse spatial pre-filter only.  It must **not**
-    be used to compute final district statistics.
-    """
     if geometry.is_empty:
         raise ValueError("Cannot compute bbox of an empty geometry.")
 
@@ -244,9 +134,7 @@ def get_padded_bbox(
     )
 
 
-# ---------------------------------------------------------------------------
-# Step 3 – Convert bbox to rasterio Window, clamped to raster extent
-# ---------------------------------------------------------------------------
+
 
 def bbox_to_raster_window(
     bbox: Tuple[float, float, float, float],
@@ -254,25 +142,7 @@ def bbox_to_raster_window(
     raster_width: int,
     raster_height: int,
 ) -> Optional[Window]:
-    """
-    Convert a bounding box in the raster's CRS to a ``rasterio.windows.Window``
-    that is clamped to the raster's pixel extent.
-
-    Parameters
-    ----------
-    bbox :
-        ``(minx, miny, maxx, maxy)`` in the raster's CRS units.
-    raster_transform :
-        Affine transform of the source raster dataset.
-    raster_width, raster_height :
-        Pixel dimensions of the source raster.
-
-    Returns
-    -------
-    rasterio.windows.Window or None
-        The clamped window, or ``None`` if the bbox does not intersect the
-        raster at all.
-    """
+    """Convert a bounding box in the raster's crs to a ``rasterio."""
     minx, miny, maxx, maxy = bbox
 
     # Compute the Window from geographic bounds
@@ -311,35 +181,14 @@ def bbox_to_raster_window(
     )
 
 
-# ---------------------------------------------------------------------------
-# Step 4 – Read the raster window
-# ---------------------------------------------------------------------------
+# Read the raster window
 
 def read_raster_window(
     dataset: rasterio.DatasetReader,
     window: Window,
     band: int = 1,
 ) -> Tuple[np.ndarray, Affine]:
-    """
-    Read a single band from *dataset* within *window* without loading the
-    full raster into memory.
-
-    Parameters
-    ----------
-    dataset :
-        An open rasterio dataset (must not be closed).
-    window :
-        The ``Window`` to read (should already be clamped to dataset bounds).
-    band :
-        1-based band index.  Defaults to ``1``.
-
-    Returns
-    -------
-    (array, window_transform)
-        ``array`` is a 2-D ``np.ndarray`` of shape ``(rows, cols)``.
-        ``window_transform`` is the ``Affine`` transform for the top-left
-        pixel of the window.
-    """
+   
     if band < 1 or band > dataset.count:
         raise ValueError(
             f"Band {band} is out of range.  Dataset has {dataset.count} band(s)."
@@ -353,9 +202,8 @@ def read_raster_window(
     return arr, window_transform
 
 
-# ---------------------------------------------------------------------------
-# Step 5 – Mask the window with the exact district polygon
-# ---------------------------------------------------------------------------
+
+# Mask the window with the exact district polygon.
 
 def mask_window_with_exact_geometry(
     window_array: np.ndarray,
@@ -364,39 +212,7 @@ def mask_window_with_exact_geometry(
     nodata: Optional[float] = None,
     all_touched: bool = False,
 ) -> ma.MaskedArray:
-    """
-    Apply the exact district polygon as a mask over *window_array*.
-
-    Pixels inside the bbox but **outside** *geometry* are masked (set to
-    True in the mask) and must not contribute to any statistics.
-
-    Parameters
-    ----------
-    window_array :
-        2-D NumPy array read from the raster window (rows × cols).
-    window_transform :
-        Affine geo-transform corresponding to *window_array*.
-    geometry :
-        Shapely geometry representing the exact district boundary.
-        May be a ``Polygon`` or ``MultiPolygon``.
-    nodata :
-        Original NoData sentinel.  Pixels already equal to this value are
-        also masked regardless of whether they fall inside the polygon.
-    all_touched :
-        If True, rasterise using "all touched" rule (pixels touching the
-        boundary are included).  Default is centre-point rule.
-
-    Returns
-    -------
-    numpy.ma.MaskedArray
-        2-D masked array.  ``mask=True`` means the pixel is invalid (outside
-        district or original NoData).
-
-    Implementation notes
-    --------------------
-    We avoid creating a temporary in-memory rasterio dataset by using
-    ``rasterio.features.geometry_mask`` directly with the window transform.
-    """
+    """Apply the exact district polygon as a mask over *window_array*."""
     from rasterio.features import geometry_mask
 
     rows, cols = window_array.shape
@@ -434,15 +250,7 @@ def mask_window_with_fractional_geometry(
     nodata: Optional[float] = None,
     all_touched: bool = False,
 ) -> tuple[ma.MaskedArray, np.ndarray, np.ndarray]:
-    """
-    Perform true geometric clipping per raster cell and compute overlap
-    fractions and intersection geometries.
-
-    Returns: (masked_array, overlap_fractions, cell_geometries)
-      - masked_array : masked array where mask=True for excluded pixels
-      - overlap_fractions : float ndarray (rows, cols) in [0,1]
-      - cell_geometries : object ndarray (rows, cols) with Shapely geometry
-    """
+    """Perform true geometric clipping per raster cell and compute overlap."""
     from shapely.ops import transform as shp_transform
     import pyproj
 
@@ -514,56 +322,9 @@ def mask_window_with_fractional_geometry(
     return masked, overlaps, geoms
 
 
-# ---------------------------------------------------------------------------
-# Main orchestrator
-# ---------------------------------------------------------------------------
+# Main orchestrator.
 
 class DistrictRasterClipper:
-    """
-    Orchestrate the two-stage district-level raster clipping workflow.
-
-    Usage
-    -----
-    ::
-
-        from hydroatlas.geometry_store import load_districts, get_district_geometry
-        from hydroatlas.raster_clip import DistrictRasterClipper
-
-        store = load_districts("districts.geojson")
-        clipper = DistrictRasterClipper(
-            raster_path="rainfall.tif",
-            district_store=store,
-            district_crs="EPSG:4326",   # CRS of the geometry store
-            padding=0.01,               # ~1 km in degrees
-        )
-        result = clipper.clip(district_id="KA_05", band=1)
-
-        print(result.mean())            # statistics over the district only
-        print(result.valid_pixel_count)
-
-    Parameters
-    ----------
-    raster_path :
-        Path to the source raster file (GeoTIFF or any GDAL-readable format).
-    district_store :
-        Dict mapping district IDs to GeoJSON features, as returned by
-        :func:`~hydroatlas.geometry_store.load_districts`.
-    district_crs :
-        CRS of the district geometries.  For plain GeoJSON this is
-        ``"EPSG:4326"``.
-    padding :
-        Uniform padding (in the raster's CRS units) added to the district
-        bounding box before the Stage-1 window read.  A small value (e.g.
-        one or two pixel widths) prevents boundary clipping artefacts.
-        Defaults to ``0.0``.
-    band :
-        Default band (1-based) to read.  Can be overridden per ``.clip()``
-        call.
-    all_touched :
-        Passed to ``mask_window_with_exact_geometry`` – controls boundary
-        pixel inclusion rule.
-    """
-
     def __init__(
         self,
         raster_path: Union[str, Path],
@@ -583,7 +344,7 @@ class DistrictRasterClipper:
         self.default_band = band
         self.all_touched = all_touched
 
-        # Cache raster metadata (opened once) --------------------------------
+        # Cache raster metadata (opened once) 
         with rasterio.open(str(self.raster_path)) as ds:
             self._raster_crs: CRS = ds.crs
             self._raster_transform: Affine = ds.transform
@@ -601,9 +362,7 @@ class DistrictRasterClipper:
             self._raster_band_count,
         )
 
-    # ------------------------------------------------------------------
-    # Main entry point
-    # ------------------------------------------------------------------
+# Main Starting point for clipping a district from the raster
 
     def clip(
         self,
@@ -611,32 +370,7 @@ class DistrictRasterClipper:
         band: Optional[int] = None,
         padding: Optional[float] = None,
     ) -> ClippedRasterResult:
-        """
-        Execute the two-stage clip for *district_id*.
-
-        Parameters
-        ----------
-        district_id :
-            Unique identifier of the district to clip.
-        band :
-            1-based band index.  Overrides the instance-level default.
-        padding :
-            Bounding-box padding in the raster's CRS units.  Overrides the
-            instance-level default.
-
-        Returns
-        -------
-        ClippedRasterResult
-            Contains the masked array, transform, CRS, metadata, and
-            convenience statistics methods.
-
-        Raises
-        ------
-        KeyError
-            If *district_id* is not in the district store.
-        ValueError
-            If the raster window is empty (district entirely outside raster).
-        """
+       
         band = band if band is not None else self.default_band
         padding = padding if padding is not None else self.padding
 
@@ -700,9 +434,6 @@ class DistrictRasterClipper:
             bbox_used=bbox,
         )
 
-    # ------------------------------------------------------------------
-    # Multi-variable convenience wrapper
-    # ------------------------------------------------------------------
 
     def clip_multiple_rasters(
         self,
@@ -711,15 +442,7 @@ class DistrictRasterClipper:
         band: int = 1,
         padding: Optional[float] = None,
     ) -> dict[str, ClippedRasterResult]:
-        """
-        Clip the same district from multiple raster files (e.g. rainfall,
-        soil moisture, temperature) using the same geometry and bbox.
-
-        Returns
-        -------
-        dict
-            ``{str(raster_path): ClippedRasterResult}``
-        """
+        """Clip the same district from multiple raster files (e."""
         results: dict[str, ClippedRasterResult] = {}
         for rp in raster_paths:
             rp = Path(rp)
