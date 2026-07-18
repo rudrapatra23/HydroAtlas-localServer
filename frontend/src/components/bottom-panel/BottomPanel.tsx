@@ -1,7 +1,7 @@
 import { useAppStore, BottomTab, LayerKey } from "../../stores/useAppStore";
 import {
   Chart as ChartJS,
-  CategoryScale,
+  TimeScale,
   LinearScale,
   PointElement,
   LineElement,
@@ -10,9 +10,12 @@ import {
   Legend,
   Filler,
 } from "chart.js";
+
+import "chartjs-adapter-date-fns";
+import zoomPlugin from "chartjs-plugin-zoom";
 import { Line } from "react-chartjs-2";
 import { motion } from "framer-motion";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { MonthlySeriesPoint } from "../../api/boundaries";
 import { useDistrictData } from "../../hooks/useDistrictData";
 import {
@@ -21,15 +24,17 @@ import {
   type Variable as CanonicalVariable,
 } from "../../stores/districtDataStore";
 
+// standard Chart.js layout components
 ChartJS.register(
-  CategoryScale,
+  TimeScale,
   LinearScale,
   PointElement,
   LineElement,
   Title,
   Tooltip,
   Legend,
-  Filler
+  Filler,
+  zoomPlugin
 );
 
 const TABS: { id: BottomTab; label: string; icon: string }[] = [
@@ -68,40 +73,41 @@ const EMPTY_SERIES: SeriesByVariable = {
   surface_runoff: [],
 };
 
-function formatMonthLabel(point: MonthlySeriesPoint): string {
-  const monthNames = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  return `${monthNames[point.month - 1]} ${point.year}`;
+function pointTimestamp(point: MonthlySeriesPoint & { date?: string; day?: number }): number {
+  if (point.date) return new Date(point.date).getTime();
+  const day = point.day ?? 1;
+  return Date.UTC(point.year, point.month - 1, day);
 }
 
-// Picks which x-axis tick indices to render, guaranteeing no two shown
-// ticks render identical text (e.g. two "Jan 2026" labels in a row).
-// Chart.js's built-in autoSkip/maxTicksLimit skips by index, not by
-// label content, so it can't make this guarantee on its own.
-function computeTickIndices(labels: string[], maxTicks = 8): Set<number> {
-  if (labels.length === 0) return new Set();
+type TimeUnit = "day" | "week" | "month" | "year";
 
-  const uniqueIndices: number[] = [];
-  let lastLabel: string | null = null;
-  labels.forEach((label, i) => {
-    if (label !== lastLabel) {
-      uniqueIndices.push(i);
-      lastLabel = label;
-    }
-  });
-
-  if (uniqueIndices.length <= maxTicks) return new Set(uniqueIndices);
-
-  const step = Math.ceil(uniqueIndices.length / maxTicks);
-  const picked = uniqueIndices.filter((_, i) => i % step === 0);
-
-  const lastIdx = uniqueIndices[uniqueIndices.length - 1];
-  if (!picked.includes(lastIdx)) picked.push(lastIdx);
-
-  return new Set(picked);
+function inferTimeUnit(timestamps: number[]): TimeUnit {
+  if (timestamps.length < 2) return "month";
+  const sorted = [...timestamps].sort((a, b) => a - b);
+  const gaps = sorted.slice(1).map((t, i) => t - sorted[i]).filter((g) => g > 0);
+  if (gaps.length === 0) return "month";
+  gaps.sort((a, b) => a - b);
+  const medianGap = gaps[Math.floor(gaps.length / 2)];
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  if (medianGap <= 1.5 * DAY_MS) return "day";
+  if (medianGap <= 9 * DAY_MS) return "week";
+  if (medianGap <= 45 * DAY_MS) return "month";
+  return "year";
 }
+
+const AXIS_DISPLAY_FORMATS: Record<TimeUnit, string> = {
+  day: "MMM d",
+  week: "MMM d",
+  month: "MMM yyyy",
+  year: "yyyy",
+};
+
+const TOOLTIP_DATE_FORMATS: Record<TimeUnit, string> = {
+  day: "MMM d, yyyy",
+  week: "'Week of' MMM d, yyyy",
+  month: "MMM yyyy",
+  year: "yyyy",
+};
 
 function linearRegression(points: MonthlySeriesPoint[]): { slope: number; intercept: number } | null {
   if (points.length < 2) return null;
@@ -119,11 +125,65 @@ function linearRegression(points: MonthlySeriesPoint[]): { slope: number; interc
   return { slope, intercept };
 }
 
-function buildChartOptions(visibleConfigs?: VariableConfig[], labels: string[] = []) {
-  // When `visibleConfigs` is supplied the chart uses two independent
-  // y-axes so Soil Moisture (~7–18 mm equivalent water depth) does not
-  // flatten Rainfall/Runoff (~0.1–200 mm) to a near-zero line. The trend
-  // tab calls this with no argument because it only ever plots Rainfall.
+
+function autoscaleYAxes(chart: ChartJS) {
+  const xScale = (chart as any).scales?.x;
+  if (!xScale || typeof xScale.min !== "number" || typeof xScale.max !== "number") return;
+  const visibleMin = xScale.min;
+  const visibleMax = xScale.max;
+
+  const rangesByAxis: Record<string, { min: number; max: number }> = {};
+
+  chart.data.datasets.forEach((dataset: any) => {
+    const axisId: string = dataset.yAxisID || "y";
+    const points = (dataset.data as { x: number; y: number | null }[]) ?? [];
+    const values = points
+      .filter(
+        (p) =>
+          p &&
+          p.x >= visibleMin &&
+          p.x <= visibleMax &&
+          typeof p.y === "number" &&
+          Number.isFinite(p.y),
+      )
+      .map((p) => p.y as number);
+    if (values.length === 0) return;
+
+    const localMin = Math.min(...values);
+    const localMax = Math.max(...values);
+    if (!rangesByAxis[axisId]) {
+      rangesByAxis[axisId] = { min: localMin, max: localMax };
+    } else {
+      rangesByAxis[axisId].min = Math.min(rangesByAxis[axisId].min, localMin);
+      rangesByAxis[axisId].max = Math.max(rangesByAxis[axisId].max, localMax);
+    }
+  });
+
+  let changed = false;
+  Object.entries(rangesByAxis).forEach(([axisId, range]) => {
+    const scaleOptions = (chart.options.scales as any)?.[axisId];
+    if (!scaleOptions) return;
+    const spread = range.max - range.min;
+    const padding = spread * 0.15 || range.max * 0.1 || 1;
+    const newMax = range.max + padding;
+    // Rainfall/runoff have a meaningful physical floor at 0 (drought = 0mm);
+    // soil moisture rarely approaches 0, so let its floor float instead.
+    const newMin = axisId === "y-water" || axisId === "y" ? 0 : Math.max(0, range.min - padding);
+    if (scaleOptions.max !== newMax || scaleOptions.min !== newMin) {
+      scaleOptions.min = newMin;
+      scaleOptions.max = newMax;
+      changed = true;
+    }
+  });
+
+  if (changed) chart.update("none");
+}
+
+function buildChartOptions(
+  visibleConfigs?: VariableConfig[], 
+  timestamps: number[] = [],
+  maxValues?: { maxSoil: number; maxWater: number; minSoil?: number }
+) {
   const useDualAxis = Array.isArray(visibleConfigs);
   const hasSoil = useDualAxis
     ? !!visibleConfigs!.some((c) => c.variable === "soil_moisture")
@@ -134,18 +194,36 @@ function buildChartOptions(visibleConfigs?: VariableConfig[], labels: string[] =
       )
     : true;
 
-  const tickIndices = computeTickIndices(labels);
+  const baseUnit = inferTimeUnit(timestamps);
+  const sortedTimestamps = [...timestamps].sort((a, b) => a - b);
+  const minTimestamp = sortedTimestamps[0];
+  const maxTimestamp = sortedTimestamps[sortedTimestamps.length - 1];
+
+  // Set up dynamic ceilings/floors based on the points found
+  const calculatedMaxSoil = maxValues && maxValues.maxSoil > 0 ? maxValues.maxSoil * 1.1 : 30;
+  const calculatedMaxWater = maxValues && maxValues.maxWater > 0 ? maxValues.maxWater * 1.1 : undefined;
+  const calculatedMinSoil =
+    maxValues && typeof maxValues.minSoil === "number"
+      ? Math.max(0, maxValues.minSoil - (maxValues.maxSoil - maxValues.minSoil) * 0.15 - 1)
+      : 0;
 
   const scales: Record<string, any> = {
     x: {
+      type: "time",
+      time: {
+        // Don't pin a single granularity — Chart.js recalculates the best-fitting
+        // unit (day/week/month/quarter/year) on every zoom 
+        
+        minUnit: baseUnit,
+        tooltipFormat: TOOLTIP_DATE_FORMATS[baseUnit],
+        displayFormats: AXIS_DISPLAY_FORMATS,
+      },
       grid: { display: false },
       ticks: {
-        autoSkip: false,
+        autoSkip: true,
         maxRotation: 0,
         minRotation: 0,
         font: { family: "Inter, sans-serif" },
-        callback: (_value: string | number, index: number) =>
-          tickIndices.has(index) ? labels[index] : "",
       },
     },
   };
@@ -161,8 +239,8 @@ function buildChartOptions(visibleConfigs?: VariableConfig[], labels: string[] =
         font: { family: "Inter, sans-serif", size: 11 },
         color: "#475569",
       },
-      min: 0,
-      max: 30,
+      min: calculatedMinSoil,
+      max: calculatedMaxSoil,
       grid: { color: "rgba(15, 23, 42, 0.06)" },
       ticks: {
         font: { family: "Inter, sans-serif" },
@@ -178,9 +256,8 @@ function buildChartOptions(visibleConfigs?: VariableConfig[], labels: string[] =
         font: { family: "Inter, sans-serif", size: 11 },
         color: "#475569",
       },
-      // Auto-fit to the Rainfall + Runoff range so a layer-toggle
-      // combination of only Rainfall, only Runoff, or both still
-      // produces a sensible scale.
+      min: 0,
+      max: calculatedMaxWater,
       grid: { drawOnChartArea: false },
       ticks: {
         font: { family: "Inter, sans-serif" },
@@ -188,6 +265,8 @@ function buildChartOptions(visibleConfigs?: VariableConfig[], labels: string[] =
     };
   } else {
     scales["y"] = {
+      min: 0,
+      max: calculatedMaxWater,
       grid: { color: "rgba(15, 23, 42, 0.06)" },
       ticks: {
         font: { family: "Inter, sans-serif" },
@@ -232,32 +311,50 @@ function buildChartOptions(visibleConfigs?: VariableConfig[], labels: string[] =
           family: "Inter, sans-serif",
         },
       },
+      zoom: {
+        pan: {
+          enabled: true,
+          mode: "x" as const,
+          threshold: 10,
+          onPanComplete: ({ chart }: { chart: ChartJS }) => autoscaleYAxes(chart),
+        },
+        zoom: {
+          wheel: {
+            enabled: true,
+            speed: 0.05,
+          },
+          pinch: {
+            enabled: true,
+          },
+          mode: "x" as const,
+          onZoomComplete: ({ chart }: { chart: ChartJS }) => autoscaleYAxes(chart),
+        },
+        limits:
+          typeof minTimestamp === "number" && typeof maxTimestamp === "number"
+            ? { x: { min: minTimestamp, max: maxTimestamp } }
+            : undefined,
+      },
     },
   };
 }
 
-function buildSeriesChart(
+function buildChartSeries(
   series: SeriesByVariable,
   monthsProcessed: number,
   visibleConfigs: VariableConfig[],
 ) {
   const reference = visibleConfigs.map((c) => series[c.variable])
     .find((points) => points.length > 0) ?? [];
-  const labels = reference.map(formatMonthLabel);
+  const timestamps = reference.map(pointTimestamp);
 
   return {
-    labels,
     datasets: visibleConfigs.map((config) => {
       const points = series[config.variable];
-      // Soil Moisture uses the left axis (mm equivalent water depth);
-      // Rainfall and Surface Runoff share the right axis (mm, auto-fit).
-      // This stops Soil Moisture's typical range from flattening the water-
-      // flux series into a near-zero line.
       const yAxisID =
         config.variable === "soil_moisture" ? "y-soil" : "y-water";
       return {
         label: `${config.label} (${config.unit})`,
-        data: points.map((p) => p.mean),
+        data: points.map((p) => ({ x: pointTimestamp(p), y: p.mean })),
         borderColor: config.color,
         backgroundColor: config.variable === "precipitation" ? `${config.color}1A` : "transparent",
         fill: config.variable === "precipitation",
@@ -269,32 +366,35 @@ function buildSeriesChart(
       };
     }),
     _monthsProcessed: monthsProcessed,
+    _timestamps: timestamps,
   } as any;
 }
 
 function buildTrendChart(series: SeriesByVariable, rainfallEnabled: boolean) {
   if (!rainfallEnabled) {
     return {
-      labels: [],
       datasets: [],
       _slope: null,
       _intercept: null,
+      _timestamps: [],
     } as any;
   }
 
   const rainfall = series.precipitation;
-  const labels = rainfall.map(formatMonthLabel);
+  const timestamps = rainfall.map(pointTimestamp);
   const regression = linearRegression(rainfall);
-  const trendLine = regression
-    ? rainfall.map((_, i) => regression.slope * i + regression.intercept)
+  const trendData = regression
+    ? rainfall.map((p, i) => ({
+        x: pointTimestamp(p),
+        y: regression.slope * i + regression.intercept,
+      }))
     : [];
 
   return {
-    labels,
     datasets: [
       {
         label: "Rainfall (observed)",
-        data: rainfall.map((p) => p.mean),
+        data: rainfall.map((p) => ({ x: pointTimestamp(p), y: p.mean })),
         borderColor: "#2563EB",
         backgroundColor: "transparent",
         tension: 0.35,
@@ -303,7 +403,7 @@ function buildTrendChart(series: SeriesByVariable, rainfallEnabled: boolean) {
       },
       {
         label: "Rainfall (linear trend)",
-        data: trendLine,
+        data: trendData,
         borderColor: "#0F172A",
         backgroundColor: "transparent",
         borderDash: [6, 6],
@@ -314,6 +414,7 @@ function buildTrendChart(series: SeriesByVariable, rainfallEnabled: boolean) {
     ],
     _slope: regression?.slope ?? null,
     _intercept: regression?.intercept ?? null,
+    _timestamps: timestamps,
   } as any;
 }
 
@@ -326,23 +427,70 @@ function computeSeriesStats(points: MonthlySeriesPoint[]) {
   const maxes = points.map((p) => p.max);
   return {
     min: Math.min(...mins),
-    max: Math.max(...maxes),
-    avg: means.reduce((a, b) => a + b, 0) / means.length,
+      max: Math.max(...maxes),
+      avg: means.reduce((a, b) => a + b, 0) / means.length,
   };
 }
 
-function TimeSeriesTab({ chart, visibleConfigs }: { chart: any; visibleConfigs: VariableConfig[] }) {
+function ResetZoomButton({ chartRef }: { chartRef: React.RefObject<any> }) {
   return (
-    <div className="min-h-[16rem] mt-4">
-      <Line data={chart} options={buildChartOptions(visibleConfigs, chart.labels)} />
+    <button
+      type="button"
+      onClick={() => {
+        const chart = chartRef.current;
+        if (!chart) return;
+        chart.resetZoom();
+        autoscaleYAxes(chart);
+      }}
+      className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-md border border-slate-200 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
+    >
+      <span className="material-symbols-rounded" style={{ fontSize: 14 }}>
+        restart_alt
+      </span>
+      Reset zoom
+    </button>
+  );
+}
+
+function TimeSeriesTab({ 
+  chart, 
+  visibleConfigs,
+  maxValues
+}: { 
+  chart: any; 
+  visibleConfigs: VariableConfig[];
+  maxValues: { maxSoil: number; maxWater: number; minSoil?: number };
+}) {
+  const chartRef = useRef<any>(null);
+  const options = useMemo(
+    () => buildChartOptions(visibleConfigs, chart._timestamps, maxValues),
+    [chart._timestamps, visibleConfigs, maxValues.maxSoil, maxValues.maxWater, maxValues.minSoil],
+  );
+  return (
+    <div className="relative min-h-[16rem] mt-4 select-none">
+      <ResetZoomButton chartRef={chartRef} />
+      <Line ref={chartRef} data={chart} options={options} />
     </div>
   );
 }
 
-function TrendTab({ chart }: { chart: any }) {
+function TrendTab({ 
+  chart,
+  maxValues
+}: { 
+  chart: any;
+  maxValues: { maxSoil: number; maxWater: number; minSoil?: number };
+}) {
+  const chartRef = useRef<any>(null);
+  const options = useMemo(
+    () => buildChartOptions(undefined, chart._timestamps, maxValues),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chart._timestamps, maxValues.maxSoil, maxValues.maxWater, maxValues.minSoil],
+  );
   return (
-    <div className="min-h-[16rem] mt-4">
-      <Line data={chart} options={buildChartOptions(undefined, chart.labels)} />
+    <div className="relative min-h-[16rem] mt-4 select-none">
+      <ResetZoomButton chartRef={chartRef} />
+      <Line ref={chartRef} data={chart} options={options} />
     </div>
   );
 }
@@ -527,8 +675,6 @@ function ExportTab({
   );
 }
 
-
-
 function BottomPanel() {
   const selectedStateId = useAppStore((state) => state.selectedStateId);
   const selectedDistrictId = useAppStore((state) => state.selectedDistrictId);
@@ -540,9 +686,6 @@ function BottomPanel() {
   const endMonth = useAppStore((state) => state.endMonth);
   const layers = useAppStore((state) => state.layers);
 
-  // The canonical hook subscribes to the shared district data store.
-  // Both this panel and the right-side `SelectedLocation` call the
-  // same hook with the same args — they share one canonical entry.
   const data = useDistrictData({
     districtId: selectedDistrictId,
     startMonth: startMonth || null,
@@ -550,17 +693,12 @@ function BottomPanel() {
     variables: CANONICAL_VARIABLES,
   });
 
-  // Layer-toggle filtering only affects which charts are VISIBLE. The
-  // canonical fetch always covers all three variables so the entry can
-  // be shared between both panels.
   const enabledVariables = useMemo(
     () => VARIABLE_CONFIGS.filter((config) => layers[config.layerKey].enabled),
     [layers]
   );
   const noLayerEnabled = enabledVariables.length === 0;
 
-  // Project the canonical store entry into the per-variable
-  // SeriesByVariable shape used by the chart builders.
   const series: SeriesByVariable = useMemo(() => {
     const next: SeriesByVariable = { ...EMPTY_SERIES };
     for (const v of CANONICAL_VARIABLES) {
@@ -578,10 +716,26 @@ function BottomPanel() {
     return next;
   }, [series]);
 
+  // Scan across data points to pick the true absolute max/min property values for the y-axis bounds
+  const maxValues = useMemo(() => {
+    let maxSoil = 0;
+    let maxWater = 0;
+    let minSoil = Infinity;
+
+    displaySeries.soil_moisture.forEach((p) => {
+      if (p.max > maxSoil) maxSoil = p.max;
+      if (p.min < minSoil) minSoil = p.min;
+    });
+    displaySeries.precipitation.forEach((p) => { if (p.max > maxWater) maxWater = p.max; });
+    displaySeries.surface_runoff.forEach((p) => { if (p.max > maxWater) maxWater = p.max; });
+
+    return { maxSoil, maxWater, minSoil: Number.isFinite(minSoil) ? minSoil : 0 };
+  }, [displaySeries]);
+
   const monthsProcessed = data.monthsProcessed;
 
   const seriesChart = useMemo(
-    () => buildSeriesChart(displaySeries, monthsProcessed, enabledVariables),
+    () => buildChartSeries(displaySeries, monthsProcessed, enabledVariables),
     [displaySeries, monthsProcessed, enabledVariables]
   );
   const trendChart = useMemo(
@@ -611,9 +765,6 @@ function BottomPanel() {
     );
   }
 
-  // Distinguish "we have at least one data point to render" from
-  // "nothing usable came back". This avoids rendering a misleading
-  // empty-state message before the first request resolves.
   const ready = data.ready || hasAnyPoints;
   const showInitialSpinner = !ready && data.loading;
   const showError = !ready && !data.loading && data.error !== null;
@@ -661,11 +812,15 @@ function BottomPanel() {
           {hasAnyPoints ? (
             <div className="relative">
               {bottomActiveTab === "time-series" && (
-                <TimeSeriesTab chart={seriesChart} visibleConfigs={enabledVariables} />
+                <TimeSeriesTab 
+                  chart={seriesChart} 
+                  visibleConfigs={enabledVariables} 
+                  maxValues={maxValues} 
+                />
               )}
               {bottomActiveTab === "trend" && (
                 layers.rainfall.enabled ? (
-                  <TrendTab chart={trendChart} />
+                  <TrendTab chart={trendChart} maxValues={maxValues} />
                 ) : (
                   <div className="flex items-center justify-center py-10">
                     <p className="text-sm text-slate-500">
