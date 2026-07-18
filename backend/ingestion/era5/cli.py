@@ -14,7 +14,7 @@ from infrastructure.db.session import async_session_maker
 from infrastructure.repositories.postgres_dataset_repository import (
     PostgresDatasetRepository,
 )
-from infrastructure.storage.s3_storage_adapter import S3StorageAdapter
+from infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -91,7 +91,7 @@ def _build_downloader(settings: Settings) -> Downloader:
     storage_root, temp_dir = _ensure_paths(settings)
     files = FileService(storage_root=storage_root, temp_dir=temp_dir)
     splitter = DatasetSplitter()
-    storage_port = S3StorageAdapter()
+    storage_port = LocalStorageAdapter()
     return Downloader(
         settings=settings,
         files=files,
@@ -152,7 +152,7 @@ async def _ensure_one(
 def _exists_for(storage_key: str) -> bool:
     """Best-effort s3 existence probe used purely for log-line source tagging."""
     try:
-        return S3StorageAdapter().exists(storage_key)
+        return LocalStorageAdapter().exists(storage_key)
     except Exception:  # noqa: BLE001
         return False
 
@@ -370,7 +370,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     # S3 connectivity
     try:
-        s3 = S3StorageAdapter()
+        s3 = LocalStorageAdapter()
         print(f"  S3 adapter init    : OK (bucket={s3.bucket_name})")
     except Exception as exc:  # noqa: BLE001
         print(f"  S3 adapter init    : FAIL ({exc})")
@@ -440,7 +440,7 @@ async def _run_precompute_one(
             print("DRY-RUN: skipping precompute.")
             return 0
 
-        storage = S3StorageAdapter()
+        storage = LocalStorageAdapter()
         raster_computation = RasterComputation(repository, storage)
         # Dedicated NullPool engine for the precompute service so the
         # 8–10 minute clipping loop does not leave a pooled asyncpg

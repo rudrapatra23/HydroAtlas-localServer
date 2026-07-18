@@ -1,9 +1,23 @@
 # ─── HydroAtlas — Docker Compose ─────────────────────────────────────
 # Run the full stack: docker compose up --build
-# Uses Neon PostgreSQL via backend/.env
+
+# Uses local PostgreSQL database
 # ─────────────────────────────────────────────────────────────────────
 
 services:
+  # ── Local PostgreSQL Database ───────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: hydroatlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   # ── One-off database migration runner ──────────────────────────────
   migrate:
     build:
@@ -18,6 +32,9 @@ services:
       VERSION: 0.1.0
       ENVIRONMENT: production
       LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/hydroatlas
+    depends_on:
+      - postgres
 
   # ── FastAPI Backend ─────────────────────────────────────────────────
   backend:
@@ -48,6 +65,7 @@ services:
       VERSION: 0.1.0
       ENVIRONMENT: production
       LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/hydroatlas
 
   # ── ERA5 Scheduler / Ingestion ──────────────────────────────────────
   era5-scheduler:
@@ -66,10 +84,14 @@ services:
       VERSION: 0.1.0
       ENVIRONMENT: production
       LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/hydroatlas
       ERA5_HISTORY_YEARS: "10"
       ERA5_SYNC_CONCURRENCY: "1"
       ERA5_SCHEDULER_TIMEZONE: UTC
       ERA5_SCHEDULER_RUN_ONCE: "true"
+
+volumes:
+  postgres_data:
 
   # ── React / Vite Frontend ───────────────────────────────────────────
   frontend:

@@ -14,7 +14,7 @@ from infrastructure.db.session import get_session
 from infrastructure.repositories.postgres_dataset_repository import (
     PostgresDatasetRepository,
 )
-from infrastructure.storage.s3_storage_adapter import S3StorageAdapter
+from infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 
 
 async def get_repository(
@@ -24,7 +24,7 @@ async def get_repository(
 
 
 async def get_storage() -> StoragePort:
-    return S3StorageAdapter()
+    return LocalStorageAdapter()
 
 
 async def get_dataset_service(

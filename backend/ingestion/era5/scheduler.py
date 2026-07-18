@@ -13,7 +13,7 @@ from infrastructure.db.session import async_session_maker
 from infrastructure.repositories.postgres_dataset_repository import (
     PostgresDatasetRepository,
 )
-from infrastructure.storage.s3_storage_adapter import S3StorageAdapter
+from infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 
 from ingestion.era5.downloader import Downloader
 from ingestion.era5.file_service import FileService
@@ -90,7 +90,7 @@ def _build_downloader(settings: Settings) -> Downloader:
         d.mkdir(parents=True, exist_ok=True)
     files = FileService(storage_root=storage_root, temp_dir=temp_dir)
     splitter = DatasetSplitter()
-    storage_port = S3StorageAdapter()
+    storage_port = LocalStorageAdapter()
     return Downloader(
         settings=settings,
         files=files,
@@ -106,13 +106,13 @@ class Era5SyncService:
         *,
         settings: Settings | None = None,
         downloader: Downloader | None = None,
-        storage: S3StorageAdapter | None = None,
+        storage: LocalStorageAdapter | None = None,
         categories: list[str] | None = None,
         concurrency: int | None = None,
         repository_factory: Callable[[], AsyncContextManager[PostgresDatasetRepository]] | None = None,
     ) -> None:
         self._settings = settings or get_settings()
-        self._storage = storage or S3StorageAdapter()
+        self._storage = storage or LocalStorageAdapter()
         self._downloader = downloader or _build_downloader(self._settings)
         self._categories = categories or logical_categories()
         self._concurrency = max(1, concurrency or self._settings.era5_sync_concurrency)
