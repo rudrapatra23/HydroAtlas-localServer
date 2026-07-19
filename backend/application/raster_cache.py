@@ -942,12 +942,12 @@ class RasterCache:
 
             lease = self._register_lease(
                 asset, cache_path, cache_hit=False, ephemeral=False,
-                source="s3", wait_seconds=wait_seconds,
+                source="local-storage", wait_seconds=wait_seconds,
                 download_seconds=download_seconds,
                 validate_seconds=validate_seconds,
             )
             _log_acquire(
-                asset=asset, source="s3", cache_hit=False,
+                asset=asset, source="local-storage", cache_hit=False,
                 bytes_downloaded=asset.file_size or cache_path.stat().st_size,
                 wait_seconds=wait_seconds, download_seconds=download_seconds,
                 validate_seconds=validate_seconds,
@@ -979,7 +979,7 @@ class RasterCache:
                 validate_seconds = time.perf_counter() - t_validate_start
                 if actual != asset.checksum:
                     raise RuntimeError(
-                        f"S3 download checksum mismatch for {asset.storage_key}: "
+                        f"Local storage checksum mismatch for {asset.storage_key}: "
                         f"db={asset.checksum}, downloaded={actual}"
                     )
             except Exception:
@@ -988,12 +988,12 @@ class RasterCache:
 
             lease = self._register_lease(
                 asset, temp_path, cache_hit=False, ephemeral=True,
-                source="s3", wait_seconds=0.0,
+                source="local-storage", wait_seconds=0.0,
                 download_seconds=download_seconds,
                 validate_seconds=validate_seconds,
             )
             _log_acquire(
-                asset=asset, source="s3", cache_hit=False,
+                asset=asset, source="local-storage", cache_hit=False,
                 bytes_downloaded=asset.file_size or temp_path.stat().st_size,
                 wait_seconds=0.0, download_seconds=download_seconds,
                 validate_seconds=validate_seconds,

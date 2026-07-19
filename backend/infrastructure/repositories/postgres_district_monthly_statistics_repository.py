@@ -1,14 +1,14 @@
-"""Postgresql repository for ``district_monthly_statistics``."""
+"""SQLAlchemy repository for ``district_monthly_statistics``."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Sequence
 
-from sqlalchemy import delete, func, insert, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.db.district_monthly_statistics_model import (
@@ -76,7 +76,7 @@ def _to_domain(model: DistrictMonthlyStatisticsModel) -> DistrictMonthlyStatisti
     )
 
 
-class PostgresDistrictMonthlyStatisticsRepository:
+class SqlAlchemyDistrictMonthlyStatisticsRepository:
     """Thin sqlalchemy wrapper around the new table."""
 
     def __init__(self, session: AsyncSession) -> None:
@@ -87,9 +87,9 @@ class PostgresDistrictMonthlyStatisticsRepository:
         if not rows:
             return 0
         payload = [_from_row(r) for r in rows]
-        stmt = pg_insert(DistrictMonthlyStatisticsModel).values(payload)
+        stmt = sqlite_insert(DistrictMonthlyStatisticsModel).values(payload)
         stmt = stmt.on_conflict_do_update(
-            constraint="uq_dms_provider_variable_gid_year_month",
+            index_elements=["provider", "variable", "gid_2", "year", "month"],
             set_={
                 "pixel_count": stmt.excluded.pixel_count,
                 "valid_pixel_count": stmt.excluded.valid_pixel_count,
@@ -99,13 +99,11 @@ class PostgresDistrictMonthlyStatisticsRepository:
                 "maximum": stmt.excluded.maximum,
                 "source_asset_id": stmt.excluded.source_asset_id,
                 "bbox": stmt.excluded.bbox,
-                "computed_at": func.now(),
+                "computed_at": datetime.now(timezone.utc),
             },
         )
         result = await self.session.execute(stmt)
         await self.session.commit()
-        # ``rowcount`` reflects the number of rows the database touched
-        # (inserted + updated); ``len(rows)`` is the upper bound.
         return int(result.rowcount or 0)
 
     async def count_for_asset(self, source_asset_id: str) -> int:
@@ -147,3 +145,6 @@ class PostgresDistrictMonthlyStatisticsRepository:
         result = await self.session.execute(stmt)
         await self.session.commit()
         return int(result.rowcount or 0)
+
+
+PostgresDistrictMonthlyStatisticsRepository = SqlAlchemyDistrictMonthlyStatisticsRepository

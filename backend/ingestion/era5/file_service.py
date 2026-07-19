@@ -6,10 +6,19 @@ from pathlib import Path, PurePosixPath
 class FileService:
     """Local-path helper for the era5 netcdf cache."""
 
-    def __init__(self, storage_root: Path, temp_dir: Path) -> None:
+    def __init__(
+        self,
+        storage_root: Path,
+        temp_dir: Path,
+        cache_root: Path | None = None,
+    ) -> None:
         self._storage_root = storage_root.resolve()
         self._temp_dir = temp_dir.resolve()
-        self._cache_root = (self._storage_root / "cache").resolve()
+        self._cache_root = (
+            cache_root.resolve()
+            if cache_root is not None
+            else (self._storage_root.parent / "cache").resolve()
+        )
         self._storage_root.mkdir(parents=True, exist_ok=True)
         self._temp_dir.mkdir(parents=True, exist_ok=True)
         self._cache_root.mkdir(parents=True, exist_ok=True)

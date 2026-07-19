@@ -19,11 +19,11 @@ from domain.ports.dataset_repository import DatasetRepository
 from domain.ports.storage_port import StoragePort
 from infrastructure.geospatial.boundary_loader import get_adm2
 from infrastructure.repositories.postgres_dataset_repository import (
-    PostgresDatasetRepository,
+    SqlAlchemyDatasetRepository,
 )
 from infrastructure.repositories.postgres_district_monthly_statistics_repository import (
     DistrictMonthlyStatisticsRow,
-    PostgresDistrictMonthlyStatisticsRepository,
+    SqlAlchemyDistrictMonthlyStatisticsRepository,
 )
 
 
@@ -85,7 +85,7 @@ class PrecomputeService:
         # session; the long clipping loop below would otherwise leave the
         # connection idle.
         async with self._session_factory() as lookup_session:
-            lookup_repo = PostgresDatasetRepository(lookup_session)
+            lookup_repo = SqlAlchemyDatasetRepository(lookup_session)
             asset = await lookup_repo.get_by_period(
                 year=year, month=month, provider=provider, variable=variable
             )
@@ -210,7 +210,7 @@ class PrecomputeService:
         for batch_start in range(0, len(rows), BATCH_SIZE):
             batch = rows[batch_start : batch_start + BATCH_SIZE]
             async with self._session_factory() as batch_session:
-                batch_repo = PostgresDistrictMonthlyStatisticsRepository(batch_session)
+                batch_repo = SqlAlchemyDistrictMonthlyStatisticsRepository(batch_session)
                 rows_upserted += await batch_repo.bulk_upsert(batch)
         db_upsert_seconds = time.perf_counter() - t_db_start
 

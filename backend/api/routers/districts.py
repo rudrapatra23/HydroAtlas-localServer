@@ -65,10 +65,10 @@ async def get_raster_computation(
     return RasterComputation(repository, storage)
 
 
-# Everything here works month by month. When you ask for a range of dates, 
-# we look into our PostgreSQL database to see what data files we have for 
-# those months. Then, we pull each file from S3 one by one and combine 
-# the numbers to give you the final statistics.
+# Everything here works month by month. When you ask for a range of dates,
+# we look into our SQLite database to see what data files we have for
+# those months. Then, we open each local ERA5 file and combine the
+# numbers to give you the final statistics.
 _NO_PERIOD_MESSAGE = "No climate data available for the selected period."
 
 
@@ -429,8 +429,8 @@ async def get_district_raster_clip(
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=(
-                        "NetCDF file is not available on disk and the S3 "
-                        "download failed. Check the storage adapter and "
+                        "NetCDF file is not available on disk and the local "
+                        "storage copy failed. Check the storage adapter and "
                         "the climate_assets row for this period."
                     ),
                 )

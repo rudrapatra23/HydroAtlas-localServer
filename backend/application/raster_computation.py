@@ -10,6 +10,44 @@ import geopandas as gpd
 import numpy as np
 import rioxarray
 import xarray as xr
+import concurrent.futures
+
+_raster_process_pool = concurrent.futures.ProcessPoolExecutor()
+
+def _worker_open_and_compute(path: str, variable: str, geometry: gpd.GeoDataFrame):
+    import xarray as xr
+    import numpy as np
+    import rioxarray
+    try:
+        rds = xr.open_dataset(path)
+        rds = rds.rio.write_crs("EPSG:4326")
+        nc_var = VARIABLE_MAP.get(variable)
+        if nc_var is None:
+            raise ValueError(f"Unknown variable '{variable}'")
+        data = rds[nc_var]
+        if len(data.dims) == 3 and data.shape[0] == 1:
+            data = data.isel({data.dims[0]: 0})
+        try:
+            clipped = data.rio.clip(geometry.geometry.values, geometry.crs, all_touched=True)
+        except rioxarray.exceptions.NoDataInBounds:
+            return RasterClipResult(0, 0, 0.0, tuple(geometry.total_bounds), 0.0, 0.0, 0.0)
+        bounds = clipped.rio.bounds()
+        values = clipped.values
+        total_pixels = values.size
+        valid_mask = ~np.isnan(values)
+        valid_pixel_count = int(valid_mask.sum())
+        valid_pixel_percentage = (valid_pixel_count / total_pixels * 100) if total_pixels > 0 else 0.0
+        valid_data = values[valid_mask]
+        mean_value = float(np.mean(valid_data)) if valid_pixel_count > 0 else 0.0
+        min_value = float(np.min(valid_data)) if valid_pixel_count > 0 else 0.0
+        max_value = float(np.max(valid_data)) if valid_pixel_count > 0 else 0.0
+        return RasterClipResult(int(total_pixels), valid_pixel_count, float(valid_pixel_percentage), bounds, mean_value, min_value, max_value)
+    finally:
+        try:
+            rds.close()
+        except:
+            pass
+
 
 from application.diagnostics import flush, get_request_id, safe_log
 from application.dto.responses import MonthlySeriesPoint, StateDistrictStatisticsItem
@@ -89,10 +127,10 @@ class RasterComputation:
         t0 = time.perf_counter()
         asset = await self.repository.get_by_period(year, month, provider, variable)
         t1 = time.perf_counter()
-        logger.info("PostgreSQL asset lookup: %.3fs", t1 - t0)
+        logger.info("SQLite asset lookup: %.3fs", t1 - t0)
         if not asset:
             raise ValueError(f"No dataset found for {provider}/{year}/{month:02d}")
-        return await self.read_raster_from_s3(asset)
+        return await self.read_raster_from_storage(asset)
 
     def _select_raster_variable(
         self,
@@ -200,8 +238,8 @@ class RasterComputation:
             raise ValueError(f"District not found: {district_gid}")
         return district
 
-    async def read_raster_from_s3(self, asset: ClimateAsset) -> OpenRasterHandle:
-        """Downloads a data file from s3 (if not already cached) and opens it for reading."""
+    async def read_raster_from_storage(self, asset: ClimateAsset) -> OpenRasterHandle:
+        """Open a data file from local storage, warming the local cache if needed."""
         lease = await self._raster_cache.acquire(asset, self.storage)
         try:
             rds = await self._raster_cache.open_dataset(lease, asset=asset)
@@ -242,45 +280,32 @@ class RasterComputation:
 
         async def _process_one(asset: ClimateAsset) -> tuple[tuple[float, float, float] | None, float, float]:
             async with semaphore:
-                handle: OpenRasterHandle | None = None
                 t_fetch_start = time.perf_counter()
                 try:
                     req_id = get_request_id()
-                    logger.info(
-                        "ASSET_BEGIN request_id=%s asset=%s/%s/%04d-%02d",
-                        req_id, asset.provider, asset.variable, asset.year, asset.month,
-                    )
+                    logger.info("ASSET_BEGIN request_id=%s asset=%s/%s/%04d-%02d", req_id, asset.provider, asset.variable, asset.year, asset.month)
                     flush()
-                    handle = await self.read_raster_from_s3(asset)
+                    lease = await self._raster_cache.acquire(asset, self.storage)
                     t_fetch_open = time.perf_counter() - t_fetch_start
-                    raster = handle.dataset
-                    logger.info(
-                        "DATASET_READY request_id=%s key=%s vars=%s",
-                        req_id, handle.lease._key, list(raster.data_vars),
-                    )
-                    flush()
-                    data = self._select_raster_variable(raster, variable)
-                    safe_log(
-                        logging.INFO,
-                        "VARIABLE_SELECT_DONE request_id=%s nc_var=%s dims=%s shape=%s",
-                        req_id, data.name, tuple(data.dims), tuple(data.shape),
-                    )
-                    flush()
+                    
                     t_clip_start = time.perf_counter()
-                    clip = self._compute_stats_for_geometry(data, geometry)
-                    t_clip = time.perf_counter() - t_clip_start
-                    logger.info(
-                        "ASSET_DONE request_id=%s asset=%s/%s/%04d-%02d "
-                        "mean=%.6f min=%.6f max=%.6f fetch_open_seconds=%.3f clip_seconds=%.3f",
-                        req_id, asset.provider, asset.variable, asset.year, asset.month,
-                        clip.mean, clip.minimum, clip.maximum, t_fetch_open, t_clip,
+                    loop = asyncio.get_running_loop()
+                    clip = await loop.run_in_executor(
+                        _raster_process_pool,
+                        _worker_open_and_compute,
+                        str(lease.path),
+                        variable,
+                        geometry
                     )
+                    t_clip = time.perf_counter() - t_clip_start
+                    logger.info("ASSET_DONE request_id=%s mean=%.6f fetch_open=%.3f clip=%.3f", req_id, clip.mean, t_fetch_open, t_clip)
                     flush()
                     return (clip.mean, clip.minimum, clip.maximum), t_fetch_open, t_clip
                 finally:
-                    if handle is not None:
-                        await handle.aclose()
-                        flush()
+                    try:
+                        lease.release()
+                    except Exception:
+                        pass
 
         results = await asyncio.gather(*(_process_one(asset) for asset in assets))
 
@@ -344,33 +369,32 @@ class RasterComputation:
 
         async def _process_one(asset: ClimateAsset) -> tuple[MonthlySeriesPoint, float, float]:
             async with semaphore:
-                handle: OpenRasterHandle | None = None
                 t_fetch_start = time.perf_counter()
                 try:
-                    handle = await self.read_raster_from_s3(asset)
+                    lease = await self._raster_cache.acquire(asset, self.storage)
                     t_fetch_open = time.perf_counter() - t_fetch_start
-                    raster = handle.dataset
-                    data = self._select_raster_variable(raster, variable)
+                    
                     t_clip_start = time.perf_counter()
-                    clip = self._compute_stats_for_geometry(data, geometry)
-                    t_clip = time.perf_counter() - t_clip_start
-                    logger.info(
-                        "Monthly series point %04d-%02d for district %s: mean=%.6f "
-                        "fetch_open_seconds=%.3f clip_seconds=%.3f",
-                        asset.year, asset.month, district_gid, clip.mean,
-                        t_fetch_open, t_clip,
+                    loop = asyncio.get_running_loop()
+                    clip = await loop.run_in_executor(
+                        _raster_process_pool,
+                        _worker_open_and_compute,
+                        str(lease.path),
+                        variable,
+                        geometry
                     )
+                    t_clip = time.perf_counter() - t_clip_start
+                    logger.info("Monthly point %04d-%02d mean=%.6f", asset.year, asset.month, clip.mean)
                     point = MonthlySeriesPoint(
-                        year=asset.year,
-                        month=asset.month,
-                        mean=clip.mean,
-                        min=clip.minimum,
-                        max=clip.maximum,
+                        year=asset.year, month=asset.month,
+                        mean=clip.mean, min=clip.minimum, max=clip.maximum
                     )
                     return point, t_fetch_open, t_clip
                 finally:
-                    if handle is not None:
-                        await handle.aclose()
+                    try:
+                        lease.release()
+                    except Exception:
+                        pass
 
         results = await asyncio.gather(*(_process_one(asset) for asset in assets))
 
@@ -565,7 +589,7 @@ class RasterComputation:
         for asset in assets:
             handle: OpenRasterHandle | None = None
             try:
-                handle = await self.read_raster_from_s3(asset)
+                handle = await self.read_raster_from_storage(asset)
                 raster = handle.dataset
                 try:
                     raster_crs = raster.rio.crs

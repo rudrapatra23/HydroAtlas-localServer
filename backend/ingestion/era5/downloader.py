@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import asyncio
 import logging
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 import shutil
 from typing import Protocol
@@ -96,7 +98,7 @@ class Downloader:
         self._retry_attempts = settings.era5_retry_attempts
         self._retry_base_seconds = settings.era5_retry_base_seconds
         self._temp_dir = settings.era5_storage_root_resolved() / "tmp"
-        self._s3_prefix = settings.era5_s3_prefix
+        self._storage_prefix = settings.era5_storage_prefix
 
     # ── Public API
 
@@ -127,7 +129,7 @@ class Downloader:
             existing = await repository.get_by_period(year, month, provider, variable)
 
         if existing is not None:
-            handle = await self._serve_from_cache_or_s3(
+            handle = await self._serve_from_cache_or_storage(
                 asset=existing,
                 provider=provider,
                 variable=variable,
@@ -155,7 +157,7 @@ class Downloader:
                     year, month, provider, variable
                 )
             if recheck is not None:
-                handle = await self._serve_from_cache_or_s3(
+                handle = await self._serve_from_cache_or_storage(
                     asset=recheck,
                     provider=provider,
                     variable=variable,
@@ -193,7 +195,7 @@ class Downloader:
             )
             return handle
 
-    async def upload_to_s3_and_register(
+    async def upload_to_storage_and_register(
         self,
         *,
         repository: DatasetRepository,
@@ -211,8 +213,8 @@ class Downloader:
         self._files.ensure_cache_dir(provider, variable, year, month)
         await asyncio.to_thread(self._move_into_cache, source, cache_path)
 
-        s3_key = f"{self._s3_prefix}/{variable}/{year:04d}/{month:02d}.nc"
-        await asyncio.to_thread(self._storage_port.upload, s3_key, cache_path)
+        storage_key = f"{self._storage_prefix}/{variable}/{year:04d}/{month:02d}.nc"
+        await asyncio.to_thread(self._storage_port.upload, storage_key, cache_path)
         checksum = await asyncio.to_thread(sha256_file, cache_path)
         file_size = cache_path.stat().st_size
 
@@ -223,7 +225,7 @@ class Downloader:
             variable=variable,
             year=year,
             month=month,
-            storage_key=s3_key,
+            storage_key=storage_key,
             checksum=checksum,
             file_size=file_size,
             status=ClimateAssetStatus.COMPLETED,
@@ -232,12 +234,12 @@ class Downloader:
         )
         saved = await repository.save(asset)
         self._logger.info(
-            "Uploaded+registered provider=%s variable=%s year=%s month=%s s3_key=%s",
+            "Uploaded+registered provider=%s variable=%s year=%s month=%s storage_key=%s",
             provider,
             variable,
             year,
             month,
-            s3_key,
+            storage_key,
         )
         return saved
 
@@ -304,7 +306,7 @@ class Downloader:
 
     # ── Internal: cache / S3 path
 
-    async def _serve_from_cache_or_s3(
+    async def _serve_from_cache_or_storage(
         self,
         *,
         asset: ClimateAsset,
@@ -333,7 +335,7 @@ class Downloader:
                 )
             self._logger.warning(
                 "Local cache checksum drift for %s/%s/%s/%s "
-                "(db=%s, disk=%s); re-downloading from S3",
+                "(db=%s, disk=%s); re-copying from local storage",
                 provider,
                 variable,
                 year,
@@ -353,7 +355,7 @@ class Downloader:
         checksum = await asyncio.to_thread(sha256_file, cache_path)
         if checksum != asset.checksum:
             raise RuntimeError(
-                f"S3 download checksum mismatch for {asset.storage_key}: "
+                f"Local storage checksum mismatch for {asset.storage_key}: "
                 f"db={asset.checksum}, downloaded={checksum}"
             )
         return DatasetHandle(
@@ -411,7 +413,9 @@ class Downloader:
         with timer.phase(PHASE_ERA5_DOWNLOAD):
             await self._download_with_retry(request, temp_bundle)
             await asyncio.to_thread(self._ensure_normalized, temp_bundle)
-            temp_bundle.replace(bundle_path)
+            bundle_path.parent.mkdir(parents=True, exist_ok=True)
+            self._temp_dir.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(self._promote_temp_bundle, temp_bundle, bundle_path)
             splits = await asyncio.to_thread(
                 self._splitter.split, bundle_path, year, month, self._temp_dir
             )
@@ -430,9 +434,9 @@ class Downloader:
         self._files.ensure_cache_dir(provider, variable, year, month)
         await asyncio.to_thread(self._move_into_cache, split_file.path, cache_path)
 
-        s3_key = f"{self._s3_prefix}/{variable}/{year:04d}/{month:02d}.nc"
+        storage_key = f"{self._storage_prefix}/{variable}/{year:04d}/{month:02d}.nc"
         with timer.phase(PHASE_S3_UPLOAD):
-            await asyncio.to_thread(self._storage_port.upload, s3_key, cache_path)
+            await asyncio.to_thread(self._storage_port.upload, storage_key, cache_path)
         checksum = await asyncio.to_thread(sha256_file, cache_path)
         file_size = cache_path.stat().st_size
 
@@ -443,7 +447,7 @@ class Downloader:
             variable=variable,
             year=year,
             month=month,
-            storage_key=s3_key,
+            storage_key=storage_key,
             checksum=checksum,
             file_size=file_size,
             status=ClimateAssetStatus.COMPLETED,
@@ -456,18 +460,18 @@ class Downloader:
 
         self._logger.info(
             "era5.download.complete provider=%s variable=%s year=%s month=%s "
-            "s3_key=%s bytes=%d",
+            "storage_key=%s bytes=%d",
             provider,
             variable,
             year,
             month,
-            s3_key,
+            storage_key,
             file_size,
         )
 
         return DatasetHandle(
             local_path=cache_path,
-            storage_key=s3_key,
+            storage_key=storage_key,
             checksum=checksum,
             file_size=file_size,
             cache_hit=False,
@@ -543,6 +547,12 @@ class Downloader:
                 url=self._settings.cdsapi_url, key=self._settings.cdsapi_key
             )
         return cdsapi.Client()
+
+    def _promote_temp_bundle(self, source: Path, target: Path) -> None:
+        """Move a normalized CDS artifact into its stable bundle path."""
+        if target.exists():
+            target.unlink()
+        source.replace(target)
 
     def _move_into_cache(self, source: Path, cache_path: Path) -> None:
         """Atomically move ``source`` to ``cache_path`` (overwriting)."""

@@ -19,5 +19,5 @@ class DatasetService:
         return await self.repository.list()
 
     async def delete_asset(self, asset_id: str) -> None:
-        """Deletes db record only, keeps s3 files intact."""
+        """Delete the database record only, leaving local files intact."""
         await self.repository.delete(asset_id)

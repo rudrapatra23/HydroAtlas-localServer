@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from pydantic import Field
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
@@ -16,36 +17,30 @@ Environment = Literal["development", "staging", "production"]
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "backend/.env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
 
     # Core app bits
-    app_name: str = Field(...)
-    version: str = Field(...)
-    environment: Environment = Field(...)
-    log_level: LogLevel = Field(...)
+    app_name: str = Field(default="HydroAtlas")
+    version: str = Field(default="1.0.0")
+    environment: Environment = Field(default="development")
+    log_level: LogLevel = Field(default="INFO")
 
-    # AWS / S3 stuff
-    aws_region: str = Field(...)
-    aws_access_key_id: Optional[str] = Field(default=None)
-    aws_secret_access_key: Optional[str] = Field(default=None)
-    s3_bucket_name: str = Field(...)
-    s3_endpoint_url: Optional[str] = Field(default=None)
-
-    # Postgres connection string
-    database_url: str = Field(...)
+    # Local SQLite database used by both the API and Alembic.
+    database_url: str = Field(default="sqlite+aiosqlite:///./hydroatlas.db")
 
     # ERA5 ingestion knobs — the whole module is opt-in, so these
     # can stay unset unless you're running the ingestion pipeline
     cdsapi_url: Optional[str] = Field(default=None)
     cdsapi_key: Optional[str] = Field(default=None)
 
+    storage_root: Optional[Path] = Field(default=None)
     era5_storage_root: Optional[Path] = Field(default=None)
     era5_logs_dir: Optional[Path] = Field(default=None)
-    era5_s3_prefix: str = Field(default="era5-land")
+    era5_storage_prefix: str = Field(default="era5")
     era5_dataset: str = Field(default="reanalysis-era5-land-monthly-means")
     era5_max_months: int = Field(default=480)
     era5_retry_attempts: int = Field(default=5)
@@ -68,18 +63,35 @@ class Settings(BaseSettings):
     # so 0 here turns caching off entirely.
     raster_cache_max_bytes: int = Field(default=2 * 1024 * 1024 * 1024)
 
+    @model_validator(mode="after")
+    def normalize_local_runtime(self) -> "Settings":
+        db_url = self.database_url.strip()
+        if db_url.startswith("sqlite:///") and not db_url.startswith("sqlite+aiosqlite:///"):
+            self.database_url = db_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+        elif not db_url.startswith("sqlite+aiosqlite:///"):
+            self.database_url = "sqlite+aiosqlite:///./hydroatlas.db"
+        return self
+
+    def repo_root_resolved(self) -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    def storage_root_resolved(self) -> Path:
+        if self.storage_root is not None:
+            return Path(self.storage_root).resolve()
+        return (self.repo_root_resolved() / "storage").resolve()
+
     def era5_storage_root_resolved(self) -> Path:
         if self.era5_storage_root is not None:
             return Path(self.era5_storage_root).resolve()
-        return (Path(__file__).resolve().parent.parent / "data" / "era5").resolve()
+        return (self.storage_root_resolved() / "era5").resolve()
 
     def era5_logs_dir_resolved(self) -> Path:
         if self.era5_logs_dir is not None:
             return Path(self.era5_logs_dir).resolve()
-        return self.era5_storage_root_resolved() / "logs"
+        return (self.storage_root_resolved() / "cache" / "logs").resolve()
 
     def raster_cache_root_resolved(self) -> Path:
-        return (self.era5_storage_root_resolved() / "cache").resolve()
+        return (self.storage_root_resolved() / "cache").resolve()
 
     def cds_credentials_configured(self) -> bool:
         if not self.cdsapi_url or not self.cdsapi_key:

@@ -444,7 +444,7 @@ function HydraMap() {
     setActiveMonthIndex(0);
     setRasterLoading(true);
     const loadingToken = useAppStore.getState().beginLoading(
-      "Fetching ERA5-Land raster from S3",
+      "Fetching ERA5-Land raster from local storage",
       "map",
     );
 

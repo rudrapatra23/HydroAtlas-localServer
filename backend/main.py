@@ -72,7 +72,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "http://127.0.0.1:5173",
             "http://localhost:4173",
             "http://127.0.0.1:4173",
-            "http://hydroatlas-frontend-alb-322053000.ap-south-1.elb.amazonaws.com",
         ],
         allow_credentials=True,
         allow_methods=["*"],

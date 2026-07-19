@@ -12,19 +12,19 @@ from domain.ports.dataset_repository import DatasetRepository
 from domain.ports.storage_port import StoragePort
 from infrastructure.db.session import get_session
 from infrastructure.repositories.postgres_dataset_repository import (
-    PostgresDatasetRepository,
+    SqlAlchemyDatasetRepository,
 )
-from infrastructure.storage.s3_storage_adapter import S3StorageAdapter
+from infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 
 
 async def get_repository(
     session: Annotated[AsyncSession, Depends(get_session)]
 ) -> DatasetRepository:
-    return PostgresDatasetRepository(session)
+    return SqlAlchemyDatasetRepository(session)
 
 
 async def get_storage() -> StoragePort:
-    return S3StorageAdapter()
+    return LocalStorageAdapter()
 
 
 async def get_dataset_service(
