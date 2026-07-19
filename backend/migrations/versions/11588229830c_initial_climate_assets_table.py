@@ -44,4 +44,3 @@ def downgrade() -> None:
     op.drop_index('ix_climate_assets_variable', table_name='climate_assets')
     op.drop_index('ix_climate_assets_provider', table_name='climate_assets')
     op.drop_table('climate_assets')
-    sa.Enum(name='climateassetstatus').drop(op.get_bind())

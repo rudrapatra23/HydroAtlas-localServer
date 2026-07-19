@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from core.config import Settings, get_settings
 from infrastructure.db.session import async_session_maker
 from infrastructure.repositories.postgres_dataset_repository import (
-    PostgresDatasetRepository,
+    SqlAlchemyDatasetRepository,
 )
 from infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 
@@ -88,7 +88,11 @@ def _build_downloader(settings: Settings) -> Downloader:
     locks_dir = storage_root / "locks"
     for d in (storage_root, logs_dir, temp_dir, locks_dir):
         d.mkdir(parents=True, exist_ok=True)
-    files = FileService(storage_root=storage_root, temp_dir=temp_dir)
+    files = FileService(
+        storage_root=storage_root,
+        temp_dir=temp_dir,
+        cache_root=settings.raster_cache_root_resolved(),
+    )
     splitter = DatasetSplitter()
     storage_port = LocalStorageAdapter()
     return Downloader(
@@ -109,7 +113,7 @@ class Era5SyncService:
         storage: LocalStorageAdapter | None = None,
         categories: list[str] | None = None,
         concurrency: int | None = None,
-        repository_factory: Callable[[], AsyncContextManager[PostgresDatasetRepository]] | None = None,
+        repository_factory: Callable[[], AsyncContextManager[SqlAlchemyDatasetRepository]] | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._storage = storage or LocalStorageAdapter()
@@ -118,7 +122,7 @@ class Era5SyncService:
         self._concurrency = max(1, concurrency or self._settings.era5_sync_concurrency)
         self._repository_factory = repository_factory or self._default_repository_factory
 
-    def _default_repository_factory(self) -> AsyncContextManager[PostgresDatasetRepository]:
+    def _default_repository_factory(self) -> AsyncContextManager[SqlAlchemyDatasetRepository]:
         return _RepositoryContext()
 
     async def sync_once(
@@ -196,10 +200,10 @@ class Era5SyncService:
 
 
 class _RepositoryContext:
-    async def __aenter__(self) -> PostgresDatasetRepository:
+    async def __aenter__(self) -> SqlAlchemyDatasetRepository:
         self._session = async_session_maker()
         session = await self._session.__aenter__()
-        self._repo = PostgresDatasetRepository(session)
+        self._repo = SqlAlchemyDatasetRepository(session)
         return self._repo
 
     async def __aexit__(self, exc_type, exc, tb) -> None:

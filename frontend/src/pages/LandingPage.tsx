@@ -108,8 +108,8 @@ export default function LandingPage() {
               "Copernicus CDS",
               "MapLibre GL",
               "FastAPI",
-              "PostgreSQL",
-              "Amazon S3",
+              "SQLite",
+              "Local Storage",
             ].map((tech) => (
               <span
                 key={tech}
@@ -192,8 +192,8 @@ export default function LandingPage() {
                 ),
               },
               {
-                title: "Cloud-Native Architecture",
-                description: "FastAPI backend, PostgreSQL storage, Amazon S3 for raster data, and React frontend. Scales from local dev to production in minutes.",
+                title: "Local-First Architecture",
+                description: "FastAPI backend, SQLite metadata, local raster storage, and a React frontend. Easy to run on a fresh machine with minimal setup.",
                 icon: (
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" />
@@ -274,7 +274,7 @@ export default function LandingPage() {
                 {
                   step: "02",
                   title: "Process & store",
-                  description: "Raster data is optimized and stored in Amazon S3 with PostgreSQL metadata indexing, enabling fast spatial queries at any scale.",
+                  description: "Raster data is stored under the local storage tree with SQLite metadata indexing, enabling fast spatial queries on a single machine.",
                 },
                 {
                   step: "03",

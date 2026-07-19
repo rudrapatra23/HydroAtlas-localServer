@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Optional, Sequence
+from typing import Sequence
 
-from sqlalchemy import func, select, tuple_
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.entities.climate_asset import ClimateAsset, ClimateAssetStatus
@@ -47,45 +46,48 @@ def _from_domain(domain: ClimateAsset) -> ClimateAssetModel:
     )
 
 
-class PostgresDatasetRepository(DatasetRepository):
+class SqlAlchemyDatasetRepository(DatasetRepository):
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def save(self, asset: ClimateAsset) -> ClimateAsset:
-        asset_id = asset.id or str(uuid.uuid4())
-        payload = {
-            "id": asset_id,
-            "provider": asset.provider,
-            "variable": asset.variable,
-            "year": asset.year,
-            "month": asset.month,
-            "storage_key": asset.storage_key,
-            "checksum": asset.checksum,
-            "file_size": asset.file_size,
-            "status": asset.status,
-            "created_at": asset.created_at,
-            "updated_at": asset.updated_at,
-        }
-        stmt = pg_insert(ClimateAssetModel).values(payload)
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_climate_assets_provider_variable_year_month",
-            set_={
-                "storage_key": stmt.excluded.storage_key,
-                "checksum": stmt.excluded.checksum,
-                "file_size": stmt.excluded.file_size,
-                "status": stmt.excluded.status,
-                "created_at": stmt.excluded.created_at,
-                "updated_at": stmt.excluded.updated_at,
-            },
-        ).returning(ClimateAssetModel.id)
-        result = await self.session.execute(stmt)
-        await self.session.commit()
-        asset_id = result.scalar_one()
-        model = await self.session.get(ClimateAssetModel, asset_id)
-        if model is None:
-            raise RuntimeError(
-                f"Upserted climate asset {asset_id} but failed to reload it"
+        existing = await self.get_by_period(
+            asset.year,
+            asset.month,
+            asset.provider,
+            asset.variable,
+        )
+        if existing is not None:
+            model = await self.session.get(ClimateAssetModel, existing.id)
+            if model is None:
+                raise RuntimeError(
+                    f"Found asset {existing.id} during upsert but could not reload it"
+                )
+            model.storage_key = asset.storage_key
+            model.checksum = asset.checksum
+            model.file_size = asset.file_size
+            model.status = asset.status
+            model.created_at = asset.created_at
+            model.updated_at = asset.updated_at
+        else:
+            model = _from_domain(
+                ClimateAsset(
+                    id=asset.id or str(uuid.uuid4()),
+                    provider=asset.provider,
+                    variable=asset.variable,
+                    year=asset.year,
+                    month=asset.month,
+                    storage_key=asset.storage_key,
+                    checksum=asset.checksum,
+                    file_size=asset.file_size,
+                    status=asset.status,
+                    created_at=asset.created_at,
+                    updated_at=asset.updated_at,
+                )
             )
+            self.session.add(model)
+        await self.session.commit()
+        await self.session.refresh(model)
         return _to_domain(model)
 
     async def get_by_id(self, asset_id: str) -> ClimateAsset | None:
@@ -185,44 +187,33 @@ class PostgresDatasetRepository(DatasetRepository):
     async def get_available_range(
         self, provider: str, variable: str
     ) -> tuple[int, int, int, int] | None:
-        """Return ``(min_year, min_month, max_year, max_month)`` in a."""
-        stmt = select(
-            func.min(ClimateAssetModel.year),
-            func.min(ClimateAssetModel.month),
-            func.max(ClimateAssetModel.year),
-            func.max(ClimateAssetModel.month),
-        ).where(
-            ClimateAssetModel.provider == provider,
-            ClimateAssetModel.variable == variable,
+        earliest_stmt = (
+            select(ClimateAssetModel.year, ClimateAssetModel.month)
+            .where(
+                ClimateAssetModel.provider == provider,
+                ClimateAssetModel.variable == variable,
+            )
+            .order_by(ClimateAssetModel.year.asc(), ClimateAssetModel.month.asc())
+            .limit(1)
         )
-        result = await self.session.execute(stmt)
-        row = result.one()
-        min_year, min_month, max_year, max_month = row
-        if min_year is None or max_year is None:
+        latest_stmt = (
+            select(ClimateAssetModel.year, ClimateAssetModel.month)
+            .where(
+                ClimateAssetModel.provider == provider,
+                ClimateAssetModel.variable == variable,
+            )
+            .order_by(ClimateAssetModel.year.desc(), ClimateAssetModel.month.desc())
+            .limit(1)
+        )
+        earliest = (await self.session.execute(earliest_stmt)).one_or_none()
+        latest = (await self.session.execute(latest_stmt)).one_or_none()
+        if earliest is None or latest is None:
             return None
-        # ``min(month)`` may not co-locate with ``min(year)`` when the
-        # earliest year only contains later months, so resolve the true
-        # boundaries with a second pass that joins on the year extremes.
-        if min_year == max_year:
-            return (int(min_year), int(min_month), int(max_year), int(max_month))
-
-        earliest_stmt = select(ClimateAssetModel.month).where(
-            ClimateAssetModel.provider == provider,
-            ClimateAssetModel.variable == variable,
-            ClimateAssetModel.year == min_year,
-        )
-        latest_stmt = select(ClimateAssetModel.month).where(
-            ClimateAssetModel.provider == provider,
-            ClimateAssetModel.variable == variable,
-            ClimateAssetModel.year == max_year,
-        )
-        earliest_months = (await self.session.execute(earliest_stmt)).scalars().all()
-        latest_months = (await self.session.execute(latest_stmt)).scalars().all()
         return (
-            int(min_year),
-            int(min(earliest_months)),
-            int(max_year),
-            int(max(latest_months)),
+            int(earliest[0]),
+            int(earliest[1]),
+            int(latest[0]),
+            int(latest[1]),
         )
 
     async def delete(self, asset_id: str) -> None:
@@ -246,3 +237,6 @@ class PostgresDatasetRepository(DatasetRepository):
         )
         result = await self.session.execute(stmt)
         return result.scalar() is not None
+
+
+PostgresDatasetRepository = SqlAlchemyDatasetRepository

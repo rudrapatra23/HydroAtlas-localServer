@@ -12,8 +12,7 @@ from core.config import get_settings
 class LocalStorageAdapter(StoragePort):
     def __init__(self):
         settings = get_settings()
-        # Default to a "storage" dir inside the repo root if not specified
-        base_dir = Path(__file__).resolve().parent.parent.parent.parent / "storage"
+        base_dir = settings.storage_root_resolved()
         self.storage_dir = Path(os.getenv("LOCAL_STORAGE_DIR", base_dir))
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,8 +58,6 @@ class LocalStorageAdapter(StoragePort):
                 path.unlink()
 
     def generate_presigned_url(self, key: str, expires_in: int = 3600) -> str:
-        # Not strictly applicable for local storage, but return a dummy URL 
-        # or local file URI in case it's ever called.
         return self._get_path(key).as_uri()
 
     def list(self, prefix: str = "") -> Sequence[str]:

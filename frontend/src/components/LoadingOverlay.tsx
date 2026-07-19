@@ -16,7 +16,7 @@ const PIPELINE_STEPS: { label: string; description: string; phases: string[]; sc
     label: 'Raster Fetching',
     description: 'Fetching and clipping the selected surface into district tiles',
     phases: [
-      'Fetching ERA5-Land raster from S3',
+      'Fetching ERA5-Land raster from local storage',
       'Clipping raster to district boundary',
       'Clipping raster across date range',
       'Rendering raster layer',
@@ -51,7 +51,7 @@ const PIPELINE_STEPS: { label: string; description: string; phases: string[]; sc
 
 const PHASE_COPY: Record<string, string> = {
   'Fetching district boundaries': 'Preparing district clipping frame',
-  'Fetching ERA5-Land raster from S3': 'Fetching monthly raster surfaces',
+  'Fetching ERA5-Land raster from local storage': 'Fetching monthly raster surfaces',
   'Clipping raster to district boundary': 'Clipping raster to the selected district',
   'Clipping raster across date range': 'Rastering and clipping the selected month range',
   'Rendering raster layer': 'Rendering clipped raster analysis',

@@ -18,7 +18,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 
 revision: str = "a7d3c1f04b9e"
@@ -44,16 +43,12 @@ def upgrade() -> None:
         sa.Column("minimum", sa.Float(), nullable=False),
         sa.Column("maximum", sa.Float(), nullable=False),
         sa.Column("source_asset_id", sa.String(length=64), nullable=False),
-        sa.Column(
-            "bbox",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-        ),
+        sa.Column("bbox", sa.JSON(), nullable=False),
         sa.Column(
             "computed_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.CheckConstraint("year BETWEEN 1900 AND 2100", name="ck_dms_year"),
         sa.CheckConstraint("month BETWEEN 1 AND 12", name="ck_dms_month"),

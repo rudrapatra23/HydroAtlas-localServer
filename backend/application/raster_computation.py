@@ -127,10 +127,10 @@ class RasterComputation:
         t0 = time.perf_counter()
         asset = await self.repository.get_by_period(year, month, provider, variable)
         t1 = time.perf_counter()
-        logger.info("PostgreSQL asset lookup: %.3fs", t1 - t0)
+        logger.info("SQLite asset lookup: %.3fs", t1 - t0)
         if not asset:
             raise ValueError(f"No dataset found for {provider}/{year}/{month:02d}")
-        return await self.read_raster_from_s3(asset)
+        return await self.read_raster_from_storage(asset)
 
     def _select_raster_variable(
         self,
@@ -238,8 +238,8 @@ class RasterComputation:
             raise ValueError(f"District not found: {district_gid}")
         return district
 
-    async def read_raster_from_s3(self, asset: ClimateAsset) -> OpenRasterHandle:
-        """Downloads a data file from s3 (if not already cached) and opens it for reading."""
+    async def read_raster_from_storage(self, asset: ClimateAsset) -> OpenRasterHandle:
+        """Open a data file from local storage, warming the local cache if needed."""
         lease = await self._raster_cache.acquire(asset, self.storage)
         try:
             rds = await self._raster_cache.open_dataset(lease, asset=asset)
@@ -589,7 +589,7 @@ class RasterComputation:
         for asset in assets:
             handle: OpenRasterHandle | None = None
             try:
-                handle = await self.read_raster_from_s3(asset)
+                handle = await self.read_raster_from_storage(asset)
                 raster = handle.dataset
                 try:
                     raster_crs = raster.rio.crs
