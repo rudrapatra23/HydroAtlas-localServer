@@ -8,6 +8,19 @@ export default defineConfig({
     // Route-level code splitting is handled by React.lazy in App.tsx
     target: "esnext",
   },
+  server: {
+    allowedHosts: [
+      'moaning-bullish-gruffly.ngrok-free.dev',
+      '.ngrok-free.dev'
+    ],
+    proxy: {
+      '^/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '')
+      }
+    }
+  },
   test: {
     environment: "jsdom",
     globals: true,
