@@ -53,11 +53,15 @@ export function useDistrictData(params: UseDistrictDataParams): UseDistrictDataR
   }, [districtId, startMonth, endMonth, variables.join(",")]);
 
   const ensureLoaded = useDistrictDataStore((s) => s.ensureLoaded);
+  const cancel = useDistrictDataStore((s) => s.cancel);
   const entry = useDistrictDataStore((s) => (key ? s.byKey[key] ?? EMPTY_ENTRY : EMPTY_ENTRY));
 
   useEffect(() => {
     if (!key || !districtId || !startMonth || !endMonth) return;
     void ensureLoaded({ districtId, startMonth, endMonth, variables });
+    return () => {
+      cancel(key);
+    };
     // `key` alone captures every input that matters (district, range,
     // sorted variable set); re-running only when it changes is correct
     // and avoids re-fetching on unstable array references.

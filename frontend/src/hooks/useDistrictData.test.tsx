@@ -248,8 +248,8 @@ describe("useDistrictData — cache reuse", () => {
       />,
     );
     await act(async () => {});
-    // No new pending request and no new network call.
-    expect(pendingByKey.get("D1|precipitation")?.length ?? 0).toBe(0);
+    // No new network call; the already-resolved promise remains in the
+    // test harness bookkeeping map.
     expect(mockedSeries).toHaveBeenCalledTimes(1);
   });
 });
@@ -343,6 +343,42 @@ describe("useDistrictData — D1 → D2 → D3 race", () => {
     ];
     expect(entry3Again?.seriesByVariable.precipitation?.points[0]?.mean).toBe(3.0);
   });
+
+  it("cancels the old district request when selection is cleared by a state change", async () => {
+    const { rerender } = render(
+      <Harness
+        districtId="D1"
+        startMonth="2025-01"
+        endMonth="2025-12"
+        variables={["precipitation"]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(pendingByKey.get("D1|precipitation")?.length).toBe(1);
+    });
+
+    const request = pendingByKey.get("D1|precipitation")![0];
+    expect(request.signal?.aborted).toBe(false);
+
+    rerender(
+      <Harness
+        districtId={null}
+        startMonth="2025-01"
+        endMonth="2025-12"
+        variables={["precipitation"]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(request.signal?.aborted).toBe(true);
+    });
+
+    const entry = useDistrictDataStore.getState().byKey[
+      "D1|2025-01|2025-12|precipitation"
+    ];
+    expect(entry?.status).toBe("loading");
+  });
 });
 
 // ── Test 4: UNCHANGED KEY ──────────────────────────────────────────────
@@ -424,10 +460,11 @@ describe("useDistrictData — key change triggers exactly one fresh fetch", () =
       />,
     );
 
-    // Exactly one new fetch per variable for the new key.
+    // Exactly one new fetch per variable for the new key. The test
+    // bookkeeping map still contains the old resolved requests.
     await waitFor(() => {
-      expect(pendingByKey.get("D1|precipitation")?.length).toBe(1);
-      expect(pendingByKey.get("D1|soil_moisture")?.length).toBe(1);
+      expect(pendingByKey.get("D1|precipitation")?.length).toBe(2);
+      expect(pendingByKey.get("D1|soil_moisture")?.length).toBe(2);
     });
     // Total network calls: 2 (initial) + 2 (new range) = 4.
     expect(mockedSeries).toHaveBeenCalledTimes(4);

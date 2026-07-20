@@ -432,25 +432,7 @@ function computeSeriesStats(points: MonthlySeriesPoint[]) {
   };
 }
 
-function ResetZoomButton({ chartRef }: { chartRef: React.RefObject<any> }) {
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        const chart = chartRef.current;
-        if (!chart) return;
-        chart.resetZoom();
-        autoscaleYAxes(chart);
-      }}
-      className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-md border border-slate-200 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
-    >
-      <span className="material-symbols-rounded" style={{ fontSize: 14 }}>
-        restart_alt
-      </span>
-      Reset zoom
-    </button>
-  );
-}
+
 
 function TimeSeriesTab({ 
   chart, 
@@ -468,7 +450,24 @@ function TimeSeriesTab({
   );
   return (
     <div className="relative min-h-[16rem] mt-4 select-none">
-      <ResetZoomButton chartRef={chartRef} />
+      <button
+        type="button"
+        title="Reset zoom"
+        onClick={() => {
+          const c = chartRef.current;
+          if (c) {
+            c.resetZoom();
+            // Optional autoscale, need to inline or call if still present
+            // Assuming autoscaleYAxes is available
+            autoscaleYAxes(c);
+          }
+        }}
+        className="absolute top-1 right-28 z-10 flex h-6 w-6 items-center justify-center rounded-md bg-white text-slate-500 shadow-sm border border-slate-200 transition-colors hover:bg-slate-100 hover:text-slate-900"
+      >
+        <span className="material-symbols-rounded" style={{ fontSize: 14 }}>
+          restart_alt
+        </span>
+      </button>
       <Line ref={chartRef} data={chart} options={options} />
     </div>
   );
@@ -489,7 +488,22 @@ function TrendTab({
   );
   return (
     <div className="relative min-h-[16rem] mt-4 select-none">
-      <ResetZoomButton chartRef={chartRef} />
+      <button
+        type="button"
+        title="Reset zoom"
+        onClick={() => {
+          const c = chartRef.current;
+          if (c) {
+            c.resetZoom();
+            autoscaleYAxes(c);
+          }
+        }}
+        className="absolute top-1 right-[200px] z-10 flex h-6 w-6 items-center justify-center rounded-md bg-white text-slate-500 shadow-sm border border-slate-200 transition-colors hover:bg-slate-100 hover:text-slate-900"
+      >
+        <span className="material-symbols-rounded" style={{ fontSize: 14 }}>
+          restart_alt
+        </span>
+      </button>
       <Line ref={chartRef} data={chart} options={options} />
     </div>
   );
@@ -755,7 +769,7 @@ function BottomPanel() {
       <button
         type="button"
         onClick={() => setBottomPanelOpen(true)}
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2.5 text-slate-900 transition-colors hover:bg-slate-50 z-20"
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 flex h-10 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-4 text-sm font-semibold text-slate-800 shadow-lg shadow-slate-900/10 backdrop-blur-xl transition hover:bg-white z-20"
       >
         <span className="material-symbols-rounded text-slate-700" style={{ fontSize: 18 }}>
           show_chart
@@ -774,7 +788,7 @@ function BottomPanel() {
     <motion.div
       initial={{ opacity: 0, y: 100 }}
       animate={{ opacity: 1, y: 0 }}
-      className="absolute bottom-6 left-0 right-0 mx-auto w-full max-w-[1000px] rounded-md border border-slate-200 bg-white px-5 py-4 z-20"
+      className="absolute bottom-6 left-0 right-0 mx-auto w-full max-w-[1000px] rounded-2xl border border-slate-200/80 bg-white/95 shadow-2xl shadow-slate-900/10 backdrop-blur-xl px-5 py-4 z-20"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-wrap gap-1">
@@ -782,10 +796,10 @@ function BottomPanel() {
             <button
               key={tab.id}
               onClick={() => setBottomActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
                 bottomActiveTab === tab.id
                   ? "bg-slate-900 text-white"
-                  : "text-slate-600 hover:bg-slate-100"
+                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
               }`}
             >
               <span className="material-symbols-rounded" style={{ fontSize: 18 }}>
@@ -798,7 +812,7 @@ function BottomPanel() {
         <button
           type="button"
           onClick={() => setBottomPanelOpen(false)}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
           aria-label="Collapse panel"
         >
           <span className="material-symbols-rounded" style={{ fontSize: 18 }}>

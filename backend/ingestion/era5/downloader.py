@@ -550,8 +550,16 @@ class Downloader:
 
     def _promote_temp_bundle(self, source: Path, target: Path) -> None:
         """Move a normalized CDS artifact into its stable bundle path."""
+        import time
         if target.exists():
-            target.unlink()
+            for attempt in range(1):
+                try:
+                    target.unlink()
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.5 * (attempt + 1))
         source.replace(target)
 
     def _move_into_cache(self, source: Path, cache_path: Path) -> None:

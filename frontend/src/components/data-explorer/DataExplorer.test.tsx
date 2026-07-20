@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act, waitFor, fireEvent, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { useAppStore } from "../../stores/useAppStore";
 
 // In-memory controllable promises per state id.
@@ -44,6 +45,14 @@ import { getDistricts } from "../../api/boundaries";
 
 const mockedGetDistricts = getDistricts as unknown as ReturnType<typeof vi.fn>;
 
+function renderExplorer() {
+  return render(
+    <MemoryRouter>
+      <DataExplorer />
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   pendingByState.clear();
   mockedGetDistricts.mockClear();
@@ -65,7 +74,7 @@ beforeEach(() => {
 
 describe("DataExplorer — H1.b district-fetch race fix", () => {
   it("commits only the latest selected state, even if S1 resolves after S2", async () => {
-    render(<DataExplorer />);
+    renderExplorer();
 
     // Start with S1 (slow).
     await act(async () => {
@@ -127,7 +136,7 @@ describe("DataExplorer — H1.b district-fetch race fix", () => {
       return promise;
     });
 
-    render(<DataExplorer />);
+    renderExplorer();
 
     await act(async () => {
       useAppStore.getState().setSelectedStateId("S1");
@@ -150,7 +159,7 @@ describe("DataExplorer — H1.b district-fetch race fix", () => {
   });
 
   it("sets the active raster variable when a layer row is selected", async () => {
-    render(<DataExplorer />);
+    renderExplorer();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /soil moisture/i }));

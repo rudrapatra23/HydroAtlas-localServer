@@ -101,8 +101,15 @@ def _build_downloader(settings: Settings) -> Downloader:
 
 def _recent_n_months(n: int) -> list[tuple[int, int]]:
     today = date.today()
-    months: list[tuple[int, int]] = []
     year, month = today.year, today.month
+    # ERA5-Land monthly data lags behind real time; the current month
+    # is never available yet, so start from the previous month.
+    month -= 1
+    if month == 0:
+        month = 12
+        year -= 1
+
+    months: list[tuple[int, int]] = []
     for _ in range(n):
         months.append((year, month))
         month -= 1
