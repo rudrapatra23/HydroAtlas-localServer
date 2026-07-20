@@ -13,3 +13,7 @@ venv/
 .env
 data/
 storage/
+*.log
+crash.log
+*.md
+!full_setup_guide.md

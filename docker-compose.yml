@@ -109,5 +109,7 @@ services:
     command: ["http", "nginx-proxy:80"]
     env_file:
       - ./backend/.env
+    ports:
+      - "4040:4040"
     depends_on:
       - nginx-proxy
