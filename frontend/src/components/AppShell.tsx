@@ -40,45 +40,23 @@ export default function AppShell() {
   return (
     /* Root viewport frame — the map fills it edge-to-edge. */
     <div className="relative h-screen w-screen overflow-hidden bg-slate-50 text-slate-900 subpixel-antialiased select-none">
-
       {/* LAYER 1: BASE MAP CANVAS (edge-to-edge) */}
       <div className="absolute inset-0 z-0">
         <HydraMap />
       </div>
 
-      {/* LAYER 2: TOP CONTROLS (compact, no large header bar) */}
-      <div className="absolute top-4 left-4 right-4 z-20 flex items-start justify-between gap-4 pointer-events-none">
-        {/* Back control */}
-        <div className="pointer-events-auto ">
-          <button
-            type="button"
-            onClick={handleBack}
-            className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
-            aria-label="Back"
-          >
-            <span className="material-symbols-rounded text-slate-600" style={{ fontSize: 18 }}>
-              arrow_back
-            </span>
-            Back
-          </button>
-        </div>
-
+      {/* LAYER 2: TOP CONTROLS */}
+      <div className="absolute top-4 right-4 z-20 flex pointer-events-none">
         {/* Right floating info card */}
-        <div
-          className={`pointer-events-auto transition-all duration-200 ${
-            rightSidebarOpen
-              ? "opacity-100 translate-x-0"
-              : "opacity-0 translate-x-4 pointer-events-none"
-          }`}
-        >
+        <div className="pointer-events-auto">
           <SelectedLocation />
         </div>
       </div>
 
       {/* LAYER 3: LEFT SIDEBAR (Data Explorer) */}
-      <div className="absolute top-16 left-4 z-20 pointer-events-auto">
-        <DataExplorer />
-      </div>
+      <div className="absolute top-0 bottom-0 left-0 z-20 pointer-events-auto">
+  <DataExplorer />
+</div>
 
       {/* LAYER 4: BOTTOM ANALYSIS PANEL */}
       <div className="absolute bottom-4 left-0 right-0 mx-auto w-full max-w-3xl px-4 z-20 pointer-events-auto">
@@ -87,7 +65,6 @@ export default function AppShell() {
 
       {/* LAYER 5: GLOBAL LOADING OVERLAY (above everything) */}
       <LoadingOverlay />
-
     </div>
   );
 }

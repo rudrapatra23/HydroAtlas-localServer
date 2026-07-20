@@ -85,3 +85,25 @@ input[type="search"]::-webkit-search-results-decoration {
   cursor: pointer;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
+
+.studio-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+.studio-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.studio-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.studio-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 9999px;
+}
+
+.studio-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
+}

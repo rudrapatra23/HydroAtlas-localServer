@@ -5,6 +5,7 @@ export type DatasetKey = "era5-land";
 export type BottomTab = "time-series" | "trend" | "statistics" | "export";
 export type Variable = "precipitation" | "soil_moisture" | "surface_runoff";
 export type LoadingScope = "map" | "analysis";
+export type RasterViewMode = "average" | "month";
 
 interface LoadingTask {
   phase: string;
@@ -47,6 +48,7 @@ export interface AppState {
   selectedStateId: string | null;
   selectedDistrictId: string | null;
   selectedVariable: Variable;
+  rasterViewMode: RasterViewMode;
   loaderArmed: boolean;
   setSelectedLayer: (layer: LayerKey) => void;
   setLeftSidebarOpen: (isOpen: boolean) => void;
@@ -63,6 +65,7 @@ export interface AppState {
   setSelectedStateId: (id: string | null) => void;
   setSelectedDistrictId: (id: string | null) => void;
   setSelectedVariable: (variable: Variable) => void;
+  setRasterViewMode: (mode: RasterViewMode) => void;
   loadingTasks: Record<string, LoadingTask>;
   loadingScope: LoadingScope | null;
   loadingCounter: number;
@@ -103,6 +106,7 @@ export const useAppStore = create<AppState>((set) => ({
   selectedStateId: null,
   selectedDistrictId: null,
   selectedVariable: "precipitation",
+  rasterViewMode: "average",
   loaderArmed: false,
   setSelectedLayer: (layer) => set({ selectedLayer: layer }),
   setLeftSidebarOpen: (isOpen) => set({ leftSidebarOpen: isOpen }),
@@ -132,6 +136,7 @@ export const useAppStore = create<AppState>((set) => ({
       loaderArmed: state.loaderArmed || id !== null,
     })),
   setSelectedVariable: (variable) => set({ selectedVariable: variable }),
+  setRasterViewMode: (mode) => set({ rasterViewMode: mode }),
   loadingTasks: {},
   loadingScope: null,
   loadingCounter: 0,

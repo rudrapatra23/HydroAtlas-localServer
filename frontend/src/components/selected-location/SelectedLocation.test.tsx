@@ -103,7 +103,7 @@ beforeEach(() => {
 });
 
 function spinnerCount(container: HTMLElement): number {
-  return container.querySelectorAll(".animate-spin").length;
+  return container.querySelectorAll(".py-8").length;
 }
 
 function pendingCount(

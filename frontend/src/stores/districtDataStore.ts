@@ -131,6 +131,17 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
     // components mounting in the same frame) await.
     let resolveInflight!: () => void;
     let rejectInflight!: (e: unknown) => void;
+    let inflightSettled = false;
+    const resolveOnce = () => {
+      if (inflightSettled) return;
+      inflightSettled = true;
+      resolveInflight();
+    };
+    const rejectOnce = (error: unknown) => {
+      if (inflightSettled) return;
+      inflightSettled = true;
+      rejectInflight(error);
+    };
     const inflightPromise = new Promise<void>((res, rej) => {
       resolveInflight = res;
       rejectInflight = rej;
@@ -173,68 +184,74 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
           throw new Error("Start Month must be on or before End Month.");
         }
 
-        for (const variable of params.variables) {
-          // Generation guard: if a newer call has bumped our key, abort.
-          if (get().generation[key] !== gen) return;
-          if (ac.signal.aborted) return;
-          const variableLabel: Record<string, string> = {
-            precipitation: 'Fetching precipitation time series',
-            soil_moisture: 'Fetching soil moisture time series',
-            surface_runoff: 'Fetching surface runoff time series',
-          };
-          useAppStore.getState().updateLoading(
-            loadingToken,
-            variableLabel[variable] ?? `Fetching ${variable}`,
-          );
-          const body = {
-            start_year: Number(params.startMonth.slice(0, 4)),
-            start_month: Number(params.startMonth.slice(5, 7)),
-            end_year: Number(params.endMonth.slice(0, 4)),
-            end_month: Number(params.endMonth.slice(5, 7)),
-            variable,
-          };
-          try {
-            const response = await getDistrictMonthlySeries(
-              params.districtId,
-              body,
-              ac.signal,
+        const variableLabel: Record<string, string> = {
+          precipitation: "Fetching precipitation time series",
+          soil_moisture: "Fetching soil moisture time series",
+          surface_runoff: "Fetching surface runoff time series",
+        };
+
+        await Promise.all(
+          params.variables.map(async (variable) => {
+            if (get().generation[key] !== gen || ac.signal.aborted) return;
+            useAppStore.getState().updateLoading(
+              loadingToken,
+              variableLabel[variable] ?? `Fetching ${variable}`,
             );
-            // Generation guard again — the await above is the long pole.
-            if (get().generation[key] !== gen) return;
-            seriesByVariable[variable] = response;
-            if (response.months_processed > monthsProcessed) {
-              monthsProcessed = response.months_processed;
+            const body = {
+              start_year: Number(params.startMonth.slice(0, 4)),
+              start_month: Number(params.startMonth.slice(5, 7)),
+              end_year: Number(params.endMonth.slice(0, 4)),
+              end_month: Number(params.endMonth.slice(5, 7)),
+              variable,
+            };
+            try {
+              const response = await getDistrictMonthlySeries(
+                params.districtId,
+                body,
+                ac.signal,
+              );
+              if (get().generation[key] !== gen || ac.signal.aborted) return;
+              seriesByVariable[variable] = response;
+              if (response.months_processed > monthsProcessed) {
+                monthsProcessed = response.months_processed;
+              }
+            } catch (err: any) {
+              if (get().generation[key] !== gen) return;
+              const message = err instanceof Error ? err.message : String(err);
+              const aborted =
+                (err instanceof DOMException && err.name === "AbortError") ||
+                /AbortError/i.test(message);
+              if (aborted) return;
+              const notFound = /404/.test(message);
+              if (notFound) {
+                anyNoData = true;
+                seriesByVariable[variable] = {
+                  district_id: params.districtId,
+                  variable,
+                  start_year: body.start_year,
+                  start_month: body.start_month,
+                  end_year: body.end_year,
+                  end_month: body.end_month,
+                  months_processed: 0,
+                  points: [],
+                };
+                return;
+              }
+              throw err;
             }
-          } catch (err: any) {
-            if (get().generation[key] !== gen) return;
-            const message =
-              err instanceof Error ? err.message : String(err);
-            const aborted =
-              (err instanceof DOMException && err.name === "AbortError") ||
-              /AbortError/i.test(message);
-            if (aborted) return;
-            const notFound = /404/.test(message);
-            if (notFound) {
-              anyNoData = true;
-              // Mark only this variable as missing; continue with others.
-              seriesByVariable[variable] = {
-                district_id: params.districtId,
-                variable,
-                start_year: body.start_year,
-                start_month: body.start_month,
-                end_year: body.end_year,
-                end_month: body.end_month,
-                months_processed: 0,
-                points: [],
-              };
-              continue;
-            }
-            throw err;
-          }
+          }),
+        );
+
+        if (get().generation[key] !== gen || ac.signal.aborted) {
+          resolveOnce();
+          return;
         }
 
         // Final generation guard before commit.
-        if (get().generation[key] !== gen) return;
+        if (get().generation[key] !== gen) {
+          resolveOnce();
+          return;
+        }
 
         set((s) => ({
           byKey: {
@@ -248,14 +265,20 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
             },
           },
         }));
-        resolveInflight();
+        resolveOnce();
       } catch (err: any) {
-        if (get().generation[key] !== gen) return;
+        if (get().generation[key] !== gen) {
+          resolveOnce();
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         const aborted =
           (err instanceof DOMException && err.name === "AbortError") ||
           /AbortError/i.test(message);
-        if (aborted) return;
+        if (aborted) {
+          resolveOnce();
+          return;
+        }
         const notFound = /404/.test(message);
         set((s) => ({
           byKey: {
@@ -269,7 +292,7 @@ export const useDistrictDataStore = create<DistrictDataState>((set, get) => ({
             },
           },
         }));
-        rejectInflight(err);
+        rejectOnce(err);
       } finally {
         // Only clear the controller if it's still ours.
         if (get().controllers[key] === ac) {

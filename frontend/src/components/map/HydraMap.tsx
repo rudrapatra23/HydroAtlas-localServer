@@ -65,6 +65,95 @@ function formatMonthLabel(result: DistrictRasterClipResponse | undefined): strin
   return `${result.year}-${String(result.month).padStart(2, "0")}`;
 }
 
+function averageRasterResults(
+  results: DistrictRasterClipResponse[],
+): DistrictRasterClipResponse | null {
+  if (results.length === 0) return null;
+
+  const base = results[0];
+  const cells = new Map<
+    string,
+    {
+      feature: DistrictRasterClipResponse["feature_collection"]["features"][number];
+      values: number[];
+    }
+  >();
+
+  for (const result of results) {
+    for (const feature of result.feature_collection.features) {
+      const key = `${feature.properties.row}:${feature.properties.col}`;
+      const value = feature.properties.value;
+      if (!Number.isFinite(value)) continue;
+      const existing = cells.get(key);
+      if (existing) {
+        existing.values.push(value);
+      } else {
+        cells.set(key, { feature, values: [value] });
+      }
+    }
+  }
+
+  const features = Array.from(cells.values()).map(({ feature, values }) => {
+    const value = values.reduce((sum, current) => sum + current, 0) / values.length;
+    return {
+      ...feature,
+      properties: {
+        ...feature.properties,
+        value,
+      },
+    };
+  });
+
+  const values = features.map((feature) => feature.properties.value);
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const percentile = (q: number) => {
+    if (sorted.length === 1) return sorted[0];
+    const index = (sorted.length - 1) * q;
+    const lower = Math.floor(index);
+    const upper = Math.ceil(index);
+    const weight = index - lower;
+    return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+  };
+  const sum = values.reduce((total, value) => total + value, 0);
+  const mean = sum / values.length;
+  const variance =
+    values.reduce((total, value) => total + (value - mean) ** 2, 0) / values.length;
+
+  return {
+    ...base,
+    year: base.year,
+    month: base.month,
+    time_decoded: `${formatMonthLabel(base)} to ${formatMonthLabel(results[results.length - 1])}`,
+    feature_collection: {
+      ...base.feature_collection,
+      features,
+    },
+    summary: {
+      ...base.summary,
+      valid_cells: values.length,
+      boundary_cells: features.filter((feature) => feature.properties.is_boundary_cell).length,
+      excluded_cells: 0,
+      bbox_cells_total: features.length,
+      mean,
+      std: Math.sqrt(variance),
+      min: sorted[0],
+      max: sorted[sorted.length - 1],
+      sum,
+      median: percentile(0.5),
+      p25: percentile(0.25),
+      p75: percentile(0.75),
+    },
+    diagnostics: {
+      ...base.diagnostics,
+      raster_view: "client_range_average",
+      months_averaged: results.length,
+      start: formatMonthLabel(base),
+      end: formatMonthLabel(results[results.length - 1]),
+    },
+  };
+}
+
 function HydraMap() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -73,6 +162,7 @@ function HydraMap() {
   const selectedVariable = useAppStore((state) => state.selectedVariable);
   const endMonth = useAppStore((state) => state.endMonth);
   const startMonth = useAppStore((state) => state.startMonth);
+  const rasterViewMode = useAppStore((state) => state.rasterViewMode);
   const rasterLayerEnabled = useAppStore((state) => {
     if (state.selectedVariable === "precipitation") return state.layers.rainfall.enabled;
     if (state.selectedVariable === "soil_moisture") return state.layers["soil-moisture"].enabled;
@@ -84,10 +174,15 @@ function HydraMap() {
   const districtRasterRef = useRef<DistrictRasterClipResponse | null>(null);
   const geojsonLoadedForStateRef = useRef<string | null>(null);
   const selectedStateIdRef = useRef<string | null>(selectedStateId);
+  const rasterViewModeRef = useRef(rasterViewMode);
 
   useEffect(() => {
     selectedStateIdRef.current = selectedStateId;
   }, [selectedStateId]);
+
+  useEffect(() => {
+    rasterViewModeRef.current = rasterViewMode;
+  }, [rasterViewMode]);
 
   // Holds every month's clipped result when the user picks a multi-month
   // range. Empty for single-month selections (we don't need a scrubber
@@ -508,7 +603,11 @@ function HydraMap() {
           setRangeResults(results);
           const lastIndex = results.length - 1;
           setActiveMonthIndex(lastIndex);
-          showResultOnMap(mapInstance, results[lastIndex]);
+          const resultToShow =
+            rasterViewModeRef.current === "average"
+              ? averageRasterResults(results) ?? results[lastIndex]
+              : results[lastIndex];
+          showResultOnMap(mapInstance, resultToShow);
         }
       } catch (error) {
         if (cancelled) return;
@@ -534,6 +633,18 @@ function HydraMap() {
     // Re-run whenever the district, variable, layer toggle, or either
     // date-range bound changes so the raster stays in sync.
   }, [rasterDateRange, rasterLayerEnabled, selectedDistrictId, selectedVariable]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || rangeResults.length <= 1) return;
+    if (rasterViewMode === "average") {
+      const averaged = averageRasterResults(rangeResults);
+      if (averaged) showResultOnMap(map, averaged);
+      return;
+    }
+    const result = rangeResults[activeMonthIndex] ?? rangeResults[rangeResults.length - 1];
+    showResultOnMap(map, result);
+  }, [activeMonthIndex, rangeResults, rasterViewMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -593,35 +704,48 @@ function HydraMap() {
 
       {rangeResults.length > 1 && selectedDistrictId && rasterLayerEnabled && (
         <div className="absolute top-4 left-1/2 z-10 -translate-x-1/2">
-          <div className="flex items-center gap-3 rounded-md border border-slate-200 bg-white/95 px-4 py-2.5 shadow-sm backdrop-blur-sm">
-            <span className="whitespace-nowrap text-[11px] font-medium text-slate-700">
-              {formatMonthLabel(rangeResults[activeMonthIndex])}
-            </span>
-            <input
-              type="range"
-              min={0}
-              max={rangeResults.length - 1}
-              step={1}
-              value={activeMonthIndex}
-              onChange={(e) => handleMonthIndexChange(Number(e.target.value))}
-              className="w-40 white-thumb-slider"
-              style={{
-                background: `linear-gradient(to right, #0ea5e9 ${(activeMonthIndex / Math.max(1, rangeResults.length - 1)) * 100}%, #e2e8f0 ${(activeMonthIndex / Math.max(1, rangeResults.length - 1)) * 100}%)`
-              }}
-              aria-label="Select month within range"
-            />
+          <div className="rounded-2xl border border-white/60 bg-white/90 px-4 py-3 shadow-2xl shadow-slate-900/15 backdrop-blur-2xl">
+            {rasterViewMode === "average" ? (
+              <div className="flex items-center gap-3">
+                <span className="rounded-full bg-cyan-50 px-3 py-1 text-[11px] font-black uppercase tracking-wide text-cyan-700">
+                  Range average
+                </span>
+                <span className="whitespace-nowrap text-xs font-semibold text-slate-600">
+                  {formatMonthLabel(rangeResults[0])} → {formatMonthLabel(rangeResults[rangeResults.length - 1])}
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <span className="whitespace-nowrap rounded-full bg-slate-950 px-3 py-1 text-[11px] font-black text-white">
+                  {formatMonthLabel(rangeResults[activeMonthIndex])}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={rangeResults.length - 1}
+                  step={1}
+                  value={activeMonthIndex}
+                  onChange={(e) => handleMonthIndexChange(Number(e.target.value))}
+                  className="w-48 white-thumb-slider"
+                  style={{
+                    background: `linear-gradient(to right, #0ea5e9 ${(activeMonthIndex / Math.max(1, rangeResults.length - 1)) * 100}%, #e2e8f0 ${(activeMonthIndex / Math.max(1, rangeResults.length - 1)) * 100}%)`
+                  }}
+                  aria-label="Select month within range"
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {legendState && selectedDistrictId && rasterLayerEnabled && (
         <div className="absolute bottom-4 right-4 z-10 pointer-events-none">
-          <div className="min-w-[240px] rounded-md border border-slate-200 bg-white/95 px-3 py-2.5 shadow-sm backdrop-blur-sm">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="min-w-[260px] rounded-2xl border border-white/60 bg-white/90 px-4 py-3 shadow-2xl shadow-slate-900/15 backdrop-blur-2xl">
+            <div className="mb-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
               {legendState.label}
             </div>
             <div
-              className="mb-1.5 h-3 w-full rounded-sm border border-slate-200"
+              className="mb-2 h-3 w-full rounded-full border border-slate-200"
               style={{
                 background: `linear-gradient(90deg, ${VARIABLE_COLOR_STOPS[selectedVariable][0]} 0%, ${VARIABLE_COLOR_STOPS[selectedVariable][1]} 33%, ${VARIABLE_COLOR_STOPS[selectedVariable][2]} 66%, ${VARIABLE_COLOR_STOPS[selectedVariable][3]} 100%)`,
               }}

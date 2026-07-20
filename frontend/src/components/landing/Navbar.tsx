@@ -12,14 +12,6 @@ const NAV_LINKS = [
 function Logo() {
   return (
     <Link to="/" className="flex items-center gap-2.5" aria-label="HydraAtlas home">
-      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M12 2L4 7v10l8 5 8-5V7l-8-5z" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
-          <path d="M12 22V12" stroke="white" strokeWidth="1.5" />
-          <path d="M4 7l8 5 8-5" stroke="white" strokeWidth="1.5" />
-          <circle cx="12" cy="12" r="2" fill="white" />
-        </svg>
-      </div>
       <span className="text-[17px] font-semibold tracking-tight text-slate-900">
         HydraAtlas
       </span>
@@ -107,11 +99,11 @@ function MobileMenu({
             GitHub
           </a>
           <Link
-            to="/studio"
-            className="flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
-          >
-            Launch Studio
-          </Link>
+                  to="/studio"
+                  className="inline-flex items-center justify-center rounded-xl bg-cyan-400 px-5 py-3 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-300"
+                >
+                  Launch Studio
+                </Link>
         </div>
       </nav>
     </div>
@@ -152,14 +144,6 @@ export default function Navbar() {
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
           {/* Pass dynamic color down to Logo if needed, or handle it locally via context/props if modified */}
           <Link to="/" className="flex items-center gap-2.5" aria-label="HydraAtlas home">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 2L4 7v10l8 5 8-5V7l-8-5z" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
-                <path d="M12 22V12" stroke="white" strokeWidth="1.5" />
-                <path d="M4 7l8 5 8-5" stroke="white" strokeWidth="1.5" />
-                <circle cx="12" cy="12" r="2" fill="white" />
-              </svg>
-            </div>
             <span className={`text-[17px] font-semibold tracking-tight transition-colors duration-300 ${logoTextClass}`}>
               HydraAtlas
             </span>
@@ -196,7 +180,7 @@ export default function Navbar() {
             </a>
             <Link
               to="/studio"
-              className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+              className="flex items-center justify-center rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors hover:bg-cyan-300"
             >
               Launch Studio
             </Link>

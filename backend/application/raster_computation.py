@@ -12,7 +12,13 @@ import rioxarray
 import xarray as xr
 import concurrent.futures
 
-_raster_process_pool = concurrent.futures.ProcessPoolExecutor()
+_raster_process_pool = None
+
+def _get_process_pool():
+    global _raster_process_pool
+    if _raster_process_pool is None:
+        _raster_process_pool = concurrent.futures.ProcessPoolExecutor()
+    return _raster_process_pool
 
 def _worker_open_and_compute(path: str, variable: str, geometry: gpd.GeoDataFrame):
     import xarray as xr
@@ -291,7 +297,7 @@ class RasterComputation:
                     t_clip_start = time.perf_counter()
                     loop = asyncio.get_running_loop()
                     clip = await loop.run_in_executor(
-                        _raster_process_pool,
+                        _get_process_pool(),
                         _worker_open_and_compute,
                         str(lease.path),
                         variable,
@@ -377,7 +383,7 @@ class RasterComputation:
                     t_clip_start = time.perf_counter()
                     loop = asyncio.get_running_loop()
                     clip = await loop.run_in_executor(
-                        _raster_process_pool,
+                        _get_process_pool(),
                         _worker_open_and_compute,
                         str(lease.path),
                         variable,

@@ -182,7 +182,7 @@ function SelectedLocation() {
     <motion.div
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
-      className="mt-0 w-full rounded-md border border-slate-200 bg-white px-4 py-4 transition-colors"
+      className="mt-0 w-[360px] rounded-md border border-slate-200 bg-white px-4 py-4 transition-colors"
     >
       <div className="flex items-center justify-between mb-3">
         <p className="text-sm font-semibold text-slate-900">

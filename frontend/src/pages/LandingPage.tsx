@@ -1,337 +1,300 @@
-import { Link } from "react-router-dom";
-import Navbar from "../components/landing/Navbar";
+import { Link, useNavigate } from "react-router-dom";
 import Footer from "../components/landing/Footer";
+import Navbar from "../components/landing/Navbar";
+import { useToast } from "../context/ToastContext";
 
-/**
- * Landing page — marketing home for HydraAtlas.
- * Phase 1: Navbar + Hero placeholder + Footer.
- * Phase 2 will add feature sections, dataset showcase, and CTAs.
- */
+const metrics = [
+  { value: "0.1°", label: "ERA5-Land grid resolution" },
+  { value: "3", label: "core hydrology signals" },
+  { value: "30d", label: "rolling local time series" },
+];
+
+const features = [
+  {
+    title: "Climate layers that load fast",
+    description:
+      "Explore rainfall, soil moisture, and runoff from one map-first workspace.",
+    // Custom layered maps icon
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-full w-full">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+      </svg>
+    ),
+  },
+  {
+    title: "Point-click hydrology context",
+    description:
+      "Select a location and inspect local trends without moving raw rasters around.",
+    // Custom crosshair / target analytics icon
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-full w-full">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 2v4M12 18v4M2 12h4M18 12h4M12 9a3 3 0 100 6 3 3 0 000-6z" />
+      </svg>
+    ),
+  },
+  {
+    title: "Local-first data pipeline",
+    description:
+      "FastAPI, SQLite metadata, and local storage keep the stack portable and transparent.",
+    // Custom database / cluster pipeline icon
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-full w-full">
+        <path d="M12 22c5.523 0 10-2.239 10-5s-4.477-5-10-5-10 2.239-10 5 4.477 5 10 5z" />
+        <path d="M2 12c0 2.761 4.477 5 10 5s10-2.239 10-5" />
+        <path d="M2 7c0 2.761 4.477 5 10 5s10-2.239 10-5" />
+      </svg>
+    ),
+  },
+];
+
+const workflow = [
+  "Ingest ERA5-Land data",
+  "Index spatial metadata",
+  "Explore signals in Studio",
+];
+
 export default function LandingPage() {
+  const navigate = useNavigate();
+  const { toast } = useToast();
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-slate-950 text-white">
       <Navbar />
 
-      {/* ─── Hero Section ─── */}
-      <section className="relative overflow-hidden bg-[#0A0E27] pt-32 pb-24 sm:pt-40 sm:pb-32">
-        {/* Subtle grid overlay */}
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.03]"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(255,255,255,.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.5) 1px, transparent 1px)",
-            backgroundSize: "64px 64px",
-          }}
-          aria-hidden="true"
-        />
+      <main>
+        <section className="relative isolate overflow-hidden px-6 pt-32 pb-20 sm:pt-40 sm:pb-28">
+          <div className="absolute inset-0 -z-10 bg-slate-950 bg-[radial-gradient(circle_at_20%_20%,rgba(14,165,233,0.24),transparent_30%),radial-gradient(circle_at_80%_0%,rgba(16,185,129,0.16),transparent_28%)]" />
+          <div
+            className="absolute inset-x-0 top-0 -z-10 h-[560px] opacity-[0.08]"
+            style={{
+              backgroundImage:
+                "linear-gradient(rgba(255,255,255,.7) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.7) 1px, transparent 1px)",
+              backgroundSize: "56px 56px",
+            }}
+            aria-hidden="true"
+          />
 
-        {/* Radial glow */}
-        <div
-          className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 h-[600px] w-[900px] opacity-30"
-          style={{
-            background:
-              "radial-gradient(ellipse at center, rgba(37,99,235,0.35) 0%, transparent 70%)",
-          }}
-          aria-hidden="true"
-        />
-
-        <div className="relative mx-auto max-w-4xl px-6 text-center">
-          {/* Badge */}
-          <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            <span className="text-xs font-medium text-slate-300">
-              Powered by ERA5-Land &amp; Copernicus
-            </span>
-          </div>
-
-          <h1 className="text-4xl font-extrabold tracking-tight text-white sm:text-6xl lg:text-7xl">
-            Climate Intelligence
-            <br />
-            <span className="text-blue-400">for Hydrology</span>
-          </h1>
-
-          <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-slate-400">
-            Analyze rainfall, soil moisture, and surface runoff across India with
-            satellite-grade precision. Built on ERA5-Land reanalysis data, served
-            through a modern geospatial stack.
-          </p>
-
-          {/* CTA Buttons */}
-          <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
-            <Link
-              to="/studio"
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-500"
-            >
-              Launch Studio
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </Link>
-            <Link
-              to="/docs"
-              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/10 hover:text-white"
-            >
-              Read Documentation
-            </Link>
-          </div>
-
-          {/* Hero visual placeholder — sized for future screenshot/video */}
-          <div className="relative mt-16 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] shadow-2xl">
-            <div className="aspect-video flex items-center justify-center">
-              <div className="text-center">
-                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-blue-600/20">
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                    <path d="M12 2L4 7v10l8 5 8-5V7l-8-5z" stroke="#60A5FA" strokeWidth="1.5" strokeLinejoin="round" />
-                    <path d="M12 22V12" stroke="#60A5FA" strokeWidth="1.5" />
-                    <path d="M4 7l8 5 8-5" stroke="#60A5FA" strokeWidth="1.5" />
-                    <circle cx="12" cy="12" r="2" fill="#60A5FA" />
-                  </svg>
-                </div>
-                <p className="text-sm font-medium text-slate-500">
-                  Interactive Studio Preview
-                </p>
+          <div className="mx-auto grid max-w-7xl items-center gap-14 lg:grid-cols-[1fr_1.1fr]">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-white/10 px-3 py-1 text-xs font-semibold text-cyan-100 shadow-sm backdrop-blur">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                Hydrology intelligence for India
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
 
-      {/* ─── Trusted Technologies ─── */}
-      <section className="border-b border-slate-100 bg-white py-16">
-        <div className="mx-auto max-w-5xl px-6">
-          <p className="text-center text-xs font-semibold uppercase tracking-wider text-slate-400">
-            Built on trusted technologies
-          </p>
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-x-12 gap-y-6">
-            {[
-              "ERA5-Land",
-              "Copernicus CDS",
-              "MapLibre GL",
-              "FastAPI",
-              "SQLite",
-              "Local Storage",
-            ].map((tech) => (
-              <span
-                key={tech}
-                className="text-sm font-semibold tracking-tight text-slate-400 transition-colors hover:text-slate-600"
-              >
-                {tech}
-              </span>
-            ))}
-          </div>
-        </div>
-      </section>
+              <h1 className="mt-6 max-w-4xl text-4xl font-black tracking-[-0.05em] text-white sm:text-6xl">
+                Hydrology, visualized with clarity.
+              </h1>
 
-      {/* ─── Features Anchor ─── */}
-      <section id="features" className="py-24 sm:py-32">
-        <div className="mx-auto max-w-7xl px-6">
-          <div className="mx-auto max-w-2xl text-center">
-            <p className="text-sm font-medium tracking-wide text-blue-600 uppercase">
-              Features
-            </p>
-            <h2 className="mt-3 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-              Everything you need for hydrological analysis
-            </h2>
-            <p className="mt-4 text-lg leading-relaxed text-slate-600">
-              From raw satellite data to actionable insights — one platform,
-              zero infrastructure.
-            </p>
-          </div>
+              <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg sm:leading-8">
+                Explore rainfall, soil moisture, and surface runoff through
+                interactive maps, time-series analytics, and district-level
+                insights powered by ERA5-Land climate data.
+              </p>
 
-          {/* Feature cards — will be expanded in Phase 2 */}
-          <div className="mt-16 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              {
-                title: "Rainfall Analytics",
-                description: "Spatiotemporal rainfall analysis with ERA5-Land reanalysis at 0.1° resolution. Trend detection, anomaly alerts, and seasonal decomposition.",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z" />
-                  </svg>
-                ),
-              },
-              {
-                title: "Soil Moisture Mapping",
-                description: "Volumetric soil water content across multiple depth layers. Critical for drought monitoring, agriculture planning, and flood forecasting.",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M2 12h20M2 12c0 5.523 4.477 10 10 10s10-4.477 10-10M2 12C2 6.477 6.477 2 12 2s10 4.477 10 10" />
-                    <path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
-                  </svg>
-                ),
-              },
-              {
-                title: "Surface Runoff",
-                description: "Quantify surface and subsurface runoff volumes. Understand water balance dynamics and identify flood-prone regions before events occur.",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                    <path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                    <path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" />
-                  </svg>
-                ),
-              },
-              {
-                title: "Interactive Map Studio",
-                description: "MapLibre-powered GIS interface with layer management, coordinate search, and point-click data retrieval. Pan, zoom, and explore freely.",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
-                    <circle cx="12" cy="10" r="3" />
-                  </svg>
-                ),
-              },
-              {
-                title: "Time Series & Trends",
-                description: "30-day rolling time series for every grid point. Statistical summaries, trend lines, and exportable datasets in CSV and JSON formats.",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 3v18h18" />
-                    <path d="M18 17l-5-9-4 5-3-3" />
-                  </svg>
-                ),
-              },
-              {
-                title: "Local-First Architecture",
-                description: "FastAPI backend, SQLite metadata, local raster storage, and a React frontend. Easy to run on a fresh machine with minimal setup.",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" />
-                  </svg>
-                ),
-              },
-            ].map((feature) => (
-              <div
-                key={feature.title}
-                className="group rounded-xl border border-slate-200 bg-white p-6 transition-all duration-200 hover:border-slate-300 hover:shadow-sm"
-              >
-                <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600 transition-colors group-hover:bg-blue-100">
-                  {feature.icon}
-                </div>
-                <h3 className="text-base font-semibold text-slate-900">
-                  {feature.title}
-                </h3>
-                <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  {feature.description}
-                </p>
+              <div className="mt-9 flex flex-col gap-3 sm:flex-row">
+                <Link
+                  to="/studio"
+                  className="inline-flex items-center justify-center rounded-xl bg-cyan-400 px-5 py-3 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-300"
+                >
+                  Launch Studio
+                </Link>
+                <Link
+                  to="/docs"
+                  className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/10 px-5 py-3 text-sm font-bold text-white backdrop-blur transition hover:bg-white/15"
+                >
+                  View docs
+                </Link>
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
 
-      {/* ─── Solutions Anchor ─── */}
-      <section id="solutions" className="border-t border-slate-100 bg-slate-50 py-24 sm:py-32">
-        <div className="mx-auto max-w-7xl px-6">
-          <div className="mx-auto max-w-2xl text-center">
-            <p className="text-sm font-medium tracking-wide text-blue-600 uppercase">
-              Solutions
-            </p>
-            <h2 className="mt-3 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-              From satellite to decision
-            </h2>
-            <p className="mt-4 text-lg leading-relaxed text-slate-600">
-              HydraAtlas bridges the gap between raw climate reanalysis data and
-              actionable hydrological intelligence.
-            </p>
-          </div>
-
-          {/* Two-column layout */}
-          <div className="mt-16 grid items-center gap-12 lg:grid-cols-2">
-            {/* Left: visual */}
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <div className="aspect-[4/3] flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-12">
-                <div className="text-center">
-                  <div className="mx-auto mb-6 grid grid-cols-3 gap-3">
-                    {["#2563EB", "#16A34A", "#EA580C"].map((color, i) => (
-                      <div key={i} className="flex flex-col items-center gap-2">
-                        <div
-                          className="h-16 w-full rounded-lg"
-                          style={{ backgroundColor: `${color}18`, border: `1px solid ${color}30` }}
-                        />
-                        <div
-                          className="h-1 w-8 rounded-full"
-                          style={{ backgroundColor: color }}
-                        />
-                      </div>
-                    ))}
+              <div className="mt-10 grid max-w-xl grid-cols-3 gap-3">
+                {metrics.map((metric) => (
+                  <div
+                    key={metric.label}
+                    className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 backdrop-blur"
+                  >
+                    <p className="text-2xl font-black tracking-tight text-white">
+                      {metric.value}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-400">
+                      {metric.label}
+                    </p>
                   </div>
-                  <p className="text-xs font-medium text-slate-400">
-                    Multi-layer analysis visualization
-                  </p>
+                ))}
+              </div>
+            </div>
+
+            {/* Faux Workspace Column Container */}
+            <div 
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                toast("Do you want to visit the Studio?", {
+                  description: "You're about to open the interactive hydrology workspace.",
+                  type: "confirm",
+                  position: "top-center",
+                  action: {
+                    label: "Launch Studio",
+                    onClick: () => navigate("/studio"),
+                  },
+                  cancelAction: {
+                    label: "Cancel",
+                    onClick: () => {},
+                  },
+                });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toast("Do you want to visit the Studio?", {
+                    description: "You're about to open the interactive hydrology workspace.",
+                    type: "confirm",
+                    position: "top-center",
+                    action: {
+                      label: "Launch Studio",
+                      onClick: () => navigate("/studio"),
+                    },
+                    cancelAction: {
+                      label: "Cancel",
+                      onClick: () => {},
+                    },
+                  });
+                }
+              }}
+              className="group relative w-full cursor-pointer transition-all duration-300 hover:scale-[1.01] rounded-[2rem] border border-white/10 bg-white/5 p-3 shadow-2xl shadow-slate-950/50 backdrop-blur"
+            >
+              <div className="overflow-hidden rounded-[1.5rem] border border-slate-800 bg-slate-950">
+                {/* Mac window header */}
+                <div className="flex items-center gap-2 border-b border-white/10 bg-slate-900/80 px-5 py-3">
+                  <div className="h-3 w-3 rounded-full bg-red-500/90"></div>
+                  <div className="h-3 w-3 rounded-full bg-yellow-500/90"></div>
+                  <div className="h-3 w-3 rounded-full bg-green-500/90"></div>
+                  <div className="ml-4 text-[11px] font-medium tracking-wide text-slate-400">localhost:3000/studio</div>
+                </div>
+
+                {/* The aspect-ratio viewport chamber */}
+                <div className="relative h-[480px] w-full overflow-hidden bg-slate-900">
+                  {/* Invisible click shield wrapper */}
+                  <div className="absolute inset-0 z-20" />
+                  
+                  {/* Hover visual enhancement indicator */}
+                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/0 transition-colors group-hover:bg-slate-950/20">
+                    <span className="rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100 border border-white/10">
+                      Click to enter workspace
+                    </span>
+                  </div>
+
+                  {/* 
+                    High-Fidelity Canvas Scale:
+                    Renders an explicit 1280px wide screen dimension to force a desktop layout engine, 
+                    then scales down seamlessly via transform: scale() to match the parent layout boundary.
+                  */}
+                  <div className="absolute left-0 top-0 origin-top-left h-[738px] w-[1280px] scale-[0.43] sm:scale-[0.52] md:scale-[0.60] lg:scale-[0.45] xl:scale-[0.56]">
+                    <iframe 
+                      src="/studio" 
+                      title="Studio Preview" 
+                      className="h-full w-full border-0 pointer-events-none select-none" 
+                      tabIndex={-1} 
+                      aria-hidden="true" 
+                    />
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Right: content list */}
-            <div className="space-y-8">
-              {[
-                {
-                  step: "01",
-                  title: "Ingest satellite data",
-                  description: "Automated pipelines pull ERA5-Land reanalysis data from Copernicus Climate Data Store, covering rainfall, soil moisture, and surface runoff.",
-                },
-                {
-                  step: "02",
-                  title: "Process & store",
-                  description: "Raster data is stored under the local storage tree with SQLite metadata indexing, enabling fast spatial queries on a single machine.",
-                },
-                {
-                  step: "03",
-                  title: "Visualize & analyze",
-                  description: "The Studio provides an interactive map with point-click analytics, time series charts, statistical summaries, and data export capabilities.",
-                },
-              ].map((item) => (
-                <div key={item.step} className="flex gap-5">
-                  <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-50 text-sm font-bold text-blue-600">
-                    {item.step}
+          </div>
+        </section>
+
+        <section id="features" className="bg-white px-6 py-20 text-slate-950">
+          <div className="mx-auto max-w-7xl">
+            <div className="max-w-2xl">
+              <p className="text-sm font-bold uppercase tracking-[0.2em] text-cyan-600">
+                Product
+              </p>
+              <h2 className="mt-3 text-3xl font-black tracking-tight sm:text-5xl">
+                Built like SaaS. Grounded like science.
+              </h2>
+            </div>
+
+            <div className="mt-12 grid gap-5 md:grid-cols-3">
+              {features.map((feature) => (
+                <article
+                  key={feature.title}
+                  className="rounded-3xl border border-slate-200 bg-slate-50 p-6 transition hover:-translate-y-1 hover:border-cyan-200 hover:bg-white hover:shadow-xl hover:shadow-slate-200/70"
+                >
+                  <div className="mb-6 h-12 w-12 rounded-2xl bg-slate-950 p-3.5 text-cyan-300">
+                    {feature.icon}
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-950">
+                    {feature.title}
+                  </h3>
+                  <p className="mt-3 text-sm leading-7 text-slate-600">
+                    {feature.description}
+                  </p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="solutions"
+          className="bg-slate-50 px-6 py-20 text-slate-950"
+        >
+          <div className="mx-auto grid max-w-7xl gap-12 lg:grid-cols-[0.85fr_1.15fr]">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.2em] text-cyan-600">
+                Workflow
+              </p>
+              <h2 className="mt-3 text-3xl font-black tracking-tight sm:text-5xl">
+                One clean loop from climate data to operational insight.
+              </h2>
+              <p className="mt-5 text-base leading-8 text-slate-600">
+                Keep the story simple: fetch trustworthy data, index it locally,
+                and give teams a beautiful place to reason about water.
+              </p>
+            </div>
+
+            <div className="grid gap-4">
+              {workflow.map((step, index) => (
+                <div
+                  key={step}
+                  className="flex items-center gap-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"
+                >
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-50 text-sm font-black text-cyan-700">
+                    0{index + 1}
                   </span>
                   <div>
-                    <h3 className="text-base font-semibold text-slate-900">
-                      {item.title}
-                    </h3>
-                    <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
-                      {item.description}
+                    <h3 className="font-bold text-slate-950">{step}</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Clear enough for operators, transparent enough for
+                      researchers.
                     </p>
                   </div>
                 </div>
               ))}
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ─── Bottom CTA ─── */}
-      <section className="bg-[#0A0E27] py-24 sm:py-32">
-        <div className="mx-auto max-w-3xl px-6 text-center">
-          <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
-            Start analyzing hydrological data today
-          </h2>
-          <p className="mx-auto mt-4 max-w-xl text-lg text-slate-400">
-            No setup required. Launch the Studio and explore rainfall, soil moisture,
-            and runoff data across India — instantly.
-          </p>
-          <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
+        <section className="bg-white px-6 py-20 text-slate-950">
+          <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 rounded-[2rem] bg-slate-950 p-8 text-white shadow-2xl shadow-slate-200 sm:p-10 lg:flex-row lg:items-center">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.2em] text-cyan-300">
+                Ready when you are
+              </p>
+              <h2 className="mt-3 max-w-2xl text-3xl font-black tracking-tight sm:text-4xl">
+                Open the Studio and start exploring hydrology signals.
+              </h2>
+            </div>
             <Link
               to="/studio"
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-500"
+              className="inline-flex shrink-0 items-center justify-center rounded-xl bg-cyan-400 px-5 py-3 text-sm font-bold text-slate-950 transition hover:bg-cyan-300"
             >
               Launch Studio
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
             </Link>
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/10 hover:text-white"
-            >
-              View on GitHub
-            </a>
           </div>
-        </div>
-      </section>
+        </section>
+      </main>
 
       <Footer />
     </div>
