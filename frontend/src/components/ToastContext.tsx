@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useCallback, useState, ReactNode } from "react";
+import { createContext, useContext, useCallback, useState, ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export type ToastType = "success" | "error" | "info" | "warning";

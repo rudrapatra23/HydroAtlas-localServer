@@ -1,6 +1,4 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../stores/useAppStore";
+
 import DataExplorer from "./data-explorer/DataExplorer";
 import SelectedLocation from "./selected-location/SelectedLocation";
 import HydraMap from "./map/HydraMap";
@@ -18,24 +16,7 @@ import LoadingOverlay from "./LoadingOverlay";
  * No studio header bar, no large paddings — the map owns the viewport.
  */
 export default function AppShell() {
-  const navigate = useNavigate();
-  const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen);
-  const [canGoBack, setCanGoBack] = useState(false);
 
-  // ``useNavigate(-1)`` is only meaningful when there is a previous
-  // entry in the router stack. On a direct load of ``/studio`` the stack
-  // is empty, so we fall back to the landing route ``/``.
-  useEffect(() => {
-    setCanGoBack(window.history.length > 1);
-  }, []);
-
-  const handleBack = () => {
-    if (canGoBack) {
-      navigate(-1);
-    } else {
-      navigate("/");
-    }
-  };
 
   return (
     /* Root viewport frame — the map fills it edge-to-edge. */
