@@ -2,7 +2,6 @@
 .gitignore
 node_modules
 dist
-.env
 *.log
 crash.log
 *.md
